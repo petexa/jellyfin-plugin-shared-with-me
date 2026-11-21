@@ -24,6 +24,7 @@ public sealed class SharePlaylistManagerTests : IDisposable
     private bool _enabled = true;
     private string? _setupProblem;
     private WhoMayShare _who = WhoMayShare.Everyone;
+    private Guid[] _allowed = Array.Empty<Guid>();
 
     private readonly Guid _lib = Guid.NewGuid();
     private readonly Guid _adult = Guid.NewGuid();
@@ -65,7 +66,7 @@ public sealed class SharePlaylistManagerTests : IDisposable
 
     // ---- set-up helpers ----
 
-    private ShareEligibility Eligibility() => new(_gw, _store, () => _who);
+    private ShareEligibility Eligibility() => new(_gw, _store, () => _who, () => _allowed);
 
     private ShareService Service() =>
         new(_gw, _store, Eligibility(), new LibraryAccessManager(_gw, _store), new ShareFolderBuilder(), () => _shareRoot, _gate, NullLogger.Instance);
@@ -318,6 +319,47 @@ public sealed class SharePlaylistManagerTests : IDisposable
         Sut().EnsurePlaylists();
 
         Assert.Equal(new[] { _adult }, _store.SharePlaylists().Keys);
+    }
+
+    [Fact]
+    public void Chosen_sharers_decide_who_gets_playlists_and_a_list_change_adds_and_removes_them()
+    {
+        var admin = Guid.NewGuid();
+        AddUser(admin, "admin", null, admin: true);
+        _who = WhoMayShare.SelectedProfiles;
+        _allowed = new[] { _kid1 };
+
+        Sut().EnsurePlaylists();
+        Assert.Equal(new[] { admin, _kid1 }.OrderBy(g => g), _store.SharePlaylists().Keys.OrderBy(g => g));
+        Assert.Equal(new[] { _kid2 }, _store.SharePlaylists()[_kid1].Keys);
+        var kid1s = Playlist(_kid1, _kid2);
+
+        _allowed = new[] { _kid2, _adult };
+        Sut().EnsurePlaylists();
+        Assert.Equal(new[] { admin, _adult, _kid2 }.OrderBy(g => g), _store.SharePlaylists().Keys.OrderBy(g => g));
+        Assert.False(_gw.Playlists.ContainsKey(kid1s));
+        Assert.Equal(new[] { _kid1 }, _store.SharePlaylists()[_kid2].Keys);
+        Assert.Equal(new[] { _kid1, _kid2 }.OrderBy(g => g), _store.SharePlaylists()[_adult].Keys.OrderBy(g => g));
+
+        _who = WhoMayShare.Everyone;
+        Sut().EnsurePlaylists();
+        Assert.Equal(new[] { admin, _adult, _kid1, _kid2 }.OrderBy(g => g), _store.SharePlaylists().Keys.OrderBy(g => g));
+    }
+
+    [Fact]
+    public void A_profile_taken_off_the_chosen_sharers_loses_its_playlist_but_keeps_its_shares()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        _allowed = new[] { _adult };
+        Sut().EnsurePlaylists();
+        var (decision, record) = Service().Create(_adult, _e18, _kid1);
+        Assert.Equal(Refusal.None, decision.Refusal);
+
+        _allowed = Array.Empty<Guid>();
+        Sut().EnsurePlaylists();
+
+        Assert.False(_store.SharePlaylists().ContainsKey(_adult));
+        Assert.Equal(ShareState.Active, _store.All().Single(r => r.Id == record!.Id).State);
     }
 
     [Fact]

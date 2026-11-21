@@ -16,6 +16,7 @@ public sealed class ShareEligibilityTests : IDisposable
     private readonly FakeServerGateway _gw = new();
     private readonly ShareStore _store;
     private WhoMayShare _who = WhoMayShare.Everyone;
+    private Guid[]? _allowed = Array.Empty<Guid>();
 
     private readonly Guid _sharer = Guid.NewGuid();
     private readonly Guid _recipient = Guid.NewGuid();
@@ -36,7 +37,7 @@ public sealed class ShareEligibilityTests : IDisposable
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
-    private ShareEligibility Sut() => new(_gw, _store, () => _who);
+    private ShareEligibility Sut() => new(_gw, _store, () => _who, () => _allowed);
 
     private Decision Check() => Sut().Check(_sharer, _item, _recipient);
 
@@ -233,6 +234,84 @@ public sealed class ShareEligibilityTests : IDisposable
         _who = WhoMayShare.Everyone;
         AddUser(_sharer, "Adult", cap: 18);
         Assert.Equal(Refusal.None, Check().Refusal);
+    }
+
+    [Fact]
+    public void SelectedProfilesAdminAlwaysMayShareThoughNotListed()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        AddUser(_sharer, "Adult", cap: null, admin: true);
+        Assert.Equal(Refusal.None, Check().Refusal);
+        _allowed = null;
+        Assert.Equal(Refusal.None, Check().Refusal);
+    }
+
+    [Fact]
+    public void SelectedProfilesListedProfileMayShareEvenWhenCapped()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        _allowed = new[] { _sharer };
+        AddUser(_sharer, "Adult", cap: 18);
+        Assert.Equal(Refusal.None, Check().Refusal);
+        Assert.True(Sut().MayShare(_sharer));
+    }
+
+    [Fact]
+    public void SelectedProfilesUnlistedProfileMayNotShare()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        AssertRefused(Check(), Refusal.SharingNotAllowed);
+        _allowed = new[] { _recipient };
+        AssertRefused(Check(), Refusal.SharingNotAllowed);
+        Assert.False(Sut().MayShare(_sharer));
+        _allowed = null; // a missing list is an empty one
+        AssertRefused(Check(), Refusal.SharingNotAllowed);
+    }
+
+    [Fact]
+    public void SelectedProfilesListedButDisabledMayNotShare()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        _allowed = new[] { _sharer };
+        AddUser(_sharer, "Adult", cap: null, disabled: true);
+        AssertRefused(Check(), Refusal.SharingNotAllowed);
+        Assert.False(Sut().MayShare(_sharer));
+    }
+
+    [Fact]
+    public void AllowedSharersCountOnlyForSelectedProfiles()
+    {
+        _allowed = new[] { _sharer };
+        _who = WhoMayShare.AdminsOnly;
+        AssertRefused(Check(), Refusal.SharingNotAllowed);
+        _who = WhoMayShare.UncappedOnly;
+        AddUser(_sharer, "Adult", cap: 18);
+        AssertRefused(Check(), Refusal.SharingNotAllowed);
+        _who = WhoMayShare.Everyone;
+        _allowed = Array.Empty<Guid>();
+        Assert.Equal(Refusal.None, Check().Refusal);
+    }
+
+    [Fact]
+    public void AllowedSharersAreReadOnEveryCheck()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        var sut = Sut();
+        Assert.Equal(Refusal.SharingNotAllowed, sut.Check(_sharer, _item, _recipient).Refusal);
+        _allowed = new[] { _sharer };
+        Assert.Equal(Refusal.None, sut.Check(_sharer, _item, _recipient).Refusal);
+        _allowed = Array.Empty<Guid>();
+        Assert.Equal(Refusal.SharingNotAllowed, sut.Check(_sharer, _item, _recipient).Refusal);
+    }
+
+    [Fact]
+    public void WithoutAListEveryProfileButAdministratorsIsUnlisted()
+    {
+        AddUser(_sharer, "Adult", cap: null);
+        var sut = new ShareEligibility(_gw, _store, () => WhoMayShare.SelectedProfiles);
+        Assert.Equal(Refusal.SharingNotAllowed, sut.Check(_sharer, _item, _recipient).Refusal);
+        AddUser(_sharer, "Adult", cap: null, admin: true);
+        Assert.Equal(Refusal.None, sut.Check(_sharer, _item, _recipient).Refusal);
     }
 
     [Fact]

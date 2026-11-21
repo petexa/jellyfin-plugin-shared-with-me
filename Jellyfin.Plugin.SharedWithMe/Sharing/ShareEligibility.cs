@@ -61,16 +61,19 @@ public class ShareEligibility
     private readonly IServerGateway _gateway;
     private readonly ShareStore _store;
     private readonly Func<WhoMayShare> _whoMayShare;
+    private readonly Func<IReadOnlyCollection<Guid>?> _allowedSharers;
 
     /// <summary>Initializes a new instance of the <see cref="ShareEligibility"/> class.</summary>
     /// <param name="gateway">The server.</param>
     /// <param name="store">The share store.</param>
     /// <param name="whoMayShare">Reads the current who-may-share setting.</param>
-    public ShareEligibility(IServerGateway gateway, ShareStore store, Func<WhoMayShare> whoMayShare)
+    /// <param name="allowedSharers">Reads the profiles chosen for <see cref="WhoMayShare.SelectedProfiles"/>; none when null.</param>
+    public ShareEligibility(IServerGateway gateway, ShareStore store, Func<WhoMayShare> whoMayShare, Func<IReadOnlyCollection<Guid>?>? allowedSharers = null)
     {
         _gateway = gateway;
         _store = store;
         _whoMayShare = whoMayShare;
+        _allowedSharers = allowedSharers ?? (() => Array.Empty<Guid>());
     }
 
     /// <summary>Checks whether a share may happen. Gateway or store exceptions propagate.</summary>
@@ -245,7 +248,11 @@ public class ShareEligibility
     /// <summary>The one message for an item that does not exist or that the sharer cannot see.</summary>
     public const string CannotShareMessage = "You can't share that title.";
 
-    /// <summary>Whether a user may share at all: exists, enabled, and allowed by the who-may-share setting.</summary>
+    /// <summary>
+    /// Whether a user may share at all: exists, enabled, and allowed by the who-may-share setting. With
+    /// <see cref="WhoMayShare.SelectedProfiles"/> an administrator always may, anyone else only when listed. The API, the
+    /// share page's list of people and the playlists all ask this one check.
+    /// </summary>
     /// <param name="sharerId">The user.</param>
     /// <returns>True when the user may share.</returns>
     public bool MayShare(Guid sharerId) => _gateway.GetUser(sharerId) is { } u && MayShare(u);
@@ -288,6 +295,7 @@ public class ShareEligibility
         WhoMayShare.Everyone => true,
         WhoMayShare.AdminsOnly => sharer.IsAdmin,
         WhoMayShare.UncappedOnly => sharer.CapScore is null,
+        WhoMayShare.SelectedProfiles => sharer.IsAdmin || (_allowedSharers()?.Contains(sharer.Id) ?? false),
         _ => false,
     };
 

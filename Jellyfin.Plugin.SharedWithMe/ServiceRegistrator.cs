@@ -31,7 +31,8 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton(sp => new ShareEligibility(
             sp.GetRequiredService<IServerGateway>(),
             sp.GetRequiredService<ShareStore>(),
-            () => Plugin.Instance?.Configuration.WhoMayShare ?? WhoMayShare.AdminsOnly));
+            () => Plugin.Instance?.Configuration.WhoMayShare ?? WhoMayShare.AdminsOnly,
+            () => Plugin.Instance?.Configuration.AllowedSharers));
         serviceCollection.AddSingleton<LibraryAccessManager>();
         serviceCollection.AddSingleton<ShareFolderBuilder>();
         serviceCollection.AddSingleton<PluginGate>();

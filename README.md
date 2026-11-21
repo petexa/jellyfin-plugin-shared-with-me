@@ -50,10 +50,14 @@ Once it is installed (see "Install"):
 
 **Who may share, and the default.** By default any profile, including a child with an age limit, can share a title
 within their own limit with a sibling whose limit is lower, with no approval and no notification. The setting "Who may
-share" (plugin settings) has three values: everyone (the default), only profiles with no age limit, or only
-administrators. Changing it does not remove shares already made: remove those on the audit page. Anyone who may share
-sees the names of all enabled profiles, hidden profiles and administrators included, in the share page's list of people
-to share with.
+share" (plugin settings) has four values: everyone (the default), only profiles with no age limit, only
+administrators, or administrators and the profiles you tick. With the last one the audit page shows a tick box for each
+enabled profile that is not an administrator: for example tick Sam and leave Jo and Alex unticked, and Sam may share
+while Jo and Alex may not. Administrators may always share and are not listed. The setting decides everything about
+sharing at once: who may share on the share page and through the API, who is offered a list of people there, and who
+gets `Share with <name>` playlists (they appear and disappear within a few seconds of saving). Changing it, or unticking
+a profile, does not remove shares already made: remove those on the audit page. Anyone who may share sees the names of
+all enabled profiles, hidden profiles and administrators included, in the share page's list of people to share with.
 
 **Before you disable the plugin or upgrade Jellyfin.** Press Restore everyone (or uninstall the plugin) before disabling
 it or before upgrading Jellyfin to a version this plugin has not been tested on. While the plugin is not running, new or
@@ -146,8 +150,9 @@ By hand:
 
 - **You can share what you can see.** If you can see a title, you can share it with a profile that cannot. A profile
   that can already see it gets nothing new, and the share is refused as unnecessary.
-- **Who may share** is a setting: everyone (the default), only profiles with no age limit, or only administrators. See
-  "Who may share, and the default" above: by default a child can share with a younger sibling.
+- **Who may share** is a setting: everyone (the default), only profiles with no age limit, only administrators, or
+  administrators and the profiles you tick. See "Who may share, and the default" above: by default a child can share
+  with a younger sibling.
 - **Blocked tags win.** If the recipient's profile blocks a tag the title carries, the share is refused (the refusal does
   not name the tag). A share lifts a title over an age limit, over "block unrated items" and into a profile without
   access to its library. It never lifts a blocked tag. If the recipient starts blocking a tag the title carries, the
@@ -198,7 +203,8 @@ By hand:
 - Not tested behind a base URL (a reverse proxy path such as `/jellyfin`).
 - Not tested on a real TV client at the time of writing. Sharing through playlists was tested through the server's API.
 - Do not downgrade the plugin: a share record written by a newer version may be refused, or partly ignored, by an older
-  one.
+  one. Set "Who may share" to a value 0.1 knows before going back to 0.1: it does not know "administrators and the
+  profiles you tick", and may then fail to read its settings and fall back to the default, everyone.
 
 ## Jellyfin behaviour you should know about
 

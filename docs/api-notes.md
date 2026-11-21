@@ -114,6 +114,7 @@ How they were found: XML docs of the server DLLs (`/jellyfin/*.xml` in `jf-share
 ### Plugin configuration API
 - `GET`/`POST /Plugins/4069397e-cf0d-460a-9a00-e5175c137516/Configuration` (admin) reads and writes `{ShareRoot, WhoMayShare}`. WhoMayShare is a string enum.
 - `reset.py` puts both back to their defaults.
+- 0.2 adds `WhoMayShare: "SelectedProfiles"` and `AllowedSharers` (an array of user ids), see "Version 0.2, A" below.
 
 ### Refusal messages
 - An item that does not exist and an item the sharer cannot see get one identical body: `{"Refusal":"NotVisibleToSharer","Message":"You can't share that title."}`. Proved for Spike Fifteen as kid1 and for random GUIDs.
@@ -656,3 +657,22 @@ What the uninstall does (`AuditService.Uninstall`, one forced run of the same te
   the spike (no unrated original in the test media); unit tests cover movie and series.
 - **M1.** `BlockedTag` now answers `"<recipient>'s settings block <title>."` (`test_share_movie.py` asserts it), and a
   share by a different sharer answers `RecipientAlreadySees`.
+
+## Version 0.2, A: chosen sharers
+
+- `WhoMayShare: "SelectedProfiles"` with `AllowedSharers: ["<user id>", ...]`: administrators may always share, any other
+  profile only when listed. The list is ignored for the other three values.
+- The save tidies the list (no empty ids, no repeats) before it is stored. A JSON `null` is stored as an empty list.
+  `GET` echoes ids in Jellyfin's dash-less form (`00f7cd89e2af407eb771b6230a1f0d6a`); compare without dashes and case.
+- A settings file without `AllowedSharers` (0.1) loads with an empty list and its own `WhoMayShare` (unit test).
+- 0.1 answers a `POST` with `"SelectedProfiles"` with `500 Error processing request.` (the enum value does not exist), so
+  `test_selected_sharers.py` fails there at its first save: the control run.
+- Every save already queues the playlists pass (`Plugin.ConfigurationSaved`), and `EnsurePlaylists` asks `MayShare` for
+  each user, so a list change needs no extra trigger. Proved on the spike by `test_selected_sharers.py`: with
+  `AllowedSharers = [kid1]` only kid1 and admin kept their `Share with` playlists (kid2, adult, newbie lost theirs), kid1
+  (capped at 15) shared Spike Fifteen with kid2, adult, kid2 and newbie got `409 SharingNotAllowed` and an empty
+  `/SharedWithMe/Recipients`, admin shared while unlisted; taking kid1 off removed its playlist and kept its share;
+  `Everyone` brought every playlist back.
+- The audit page lists the tick boxes from `ApiClient.getUsers()` (enabled, not administrator) and writes exactly the
+  ticked ones on every save, whichever value is picked: the list is kept while another value is in force, and an id of a
+  profile not shown (disabled, or now an administrator) is dropped at the next save.

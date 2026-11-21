@@ -1,3 +1,4 @@
+using System;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.SharedWithMe.Configuration;
@@ -13,6 +14,9 @@ public enum WhoMayShare
 
     /// <summary>Only administrators.</summary>
     AdminsOnly,
+
+    /// <summary>Administrators, and the profiles listed in <see cref="PluginConfiguration.AllowedSharers"/>.</summary>
+    SelectedProfiles,
 }
 
 /// <summary>Plugin settings.</summary>
@@ -23,6 +27,12 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets who may share.</summary>
     public WhoMayShare WhoMayShare { get; set; } = WhoMayShare.Everyone;
+
+    /// <summary>
+    /// Gets or sets the profiles (user ids) that may share when <see cref="WhoMayShare"/> is
+    /// <see cref="WhoMayShare.SelectedProfiles"/>. Ignored for the other values; administrators never need to be listed.
+    /// </summary>
+    public Guid[] AllowedSharers { get; set; } = Array.Empty<Guid>();
 
     /// <summary>
     /// Gets or sets a value indicating whether every user who may share gets a private playlist "Share with &lt;name&gt;"

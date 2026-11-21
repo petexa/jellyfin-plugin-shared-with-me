@@ -281,6 +281,10 @@ profile share" (the API, the playlists, the share page's list of people) goes th
 `Share with <name>` playlists appear and disappear with the setting. A profile that stops being allowed keeps the shares it
 already made (as with the other values); administrators remove them on the audit page.
 
+Builder's calls (2026-11-21): the audit page saves exactly the ticked boxes on every save, whatever value is picked, so the
+list survives a switch to another value and back; a listed profile that is disabled or made an administrator is not shown
+and drops off the list at the next save (an administrator needs no entry). A missing or `null` list counts as empty.
+
 ### B. Expiring shares
 
 A share record gains `ExpiresUtc` (null = until removed). The web share page and the audit page's "Add title" get a

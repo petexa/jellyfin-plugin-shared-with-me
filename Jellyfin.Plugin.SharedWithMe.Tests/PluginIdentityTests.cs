@@ -1,5 +1,9 @@
 using System;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Xml.Serialization;
 using Jellyfin.Plugin.SharedWithMe.Configuration;
 using Xunit;
 
@@ -14,6 +18,50 @@ public class PluginIdentityTests
 
         Assert.Equal(string.Empty, config.ShareRoot);
         Assert.Equal(WhoMayShare.Everyone, config.WhoMayShare);
+        Assert.Empty(config.AllowedSharers);
+    }
+
+    // The server keeps the settings as XML (System.Xml.Serialization) and the dashboard sends them as JSON with enums as
+    // strings.
+    [Fact]
+    public void Chosen_sharers_survive_a_save_and_load()
+    {
+        var kid = Guid.NewGuid();
+        var config = new PluginConfiguration { WhoMayShare = WhoMayShare.SelectedProfiles, AllowedSharers = new[] { kid } };
+
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+        var xml = new StringWriter();
+        serializer.Serialize(xml, config);
+        var back = (PluginConfiguration)serializer.Deserialize(new StringReader(xml.ToString()))!;
+        Assert.Equal(WhoMayShare.SelectedProfiles, back.WhoMayShare);
+        Assert.Equal(new[] { kid }, back.AllowedSharers);
+
+        var json = new JsonSerializerOptions { Converters = { new JsonStringEnumConverter() } };
+        var text = JsonSerializer.Serialize(config, json);
+        Assert.Contains("\"SelectedProfiles\"", text, StringComparison.Ordinal);
+        var fromJson = JsonSerializer.Deserialize<PluginConfiguration>(text, json)!;
+        Assert.Equal(WhoMayShare.SelectedProfiles, fromJson.WhoMayShare);
+        Assert.Equal(new[] { kid }, fromJson.AllowedSharers);
+    }
+
+    // A settings file written by 0.1 has no AllowedSharers: it loads exactly as before, with an empty list.
+    [Fact]
+    public void A_settings_file_from_before_chosen_sharers_loads_as_before()
+    {
+        const string old = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            + "<PluginConfiguration xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n"
+            + "  <ShareRoot>/srv/shares</ShareRoot>\n"
+            + "  <WhoMayShare>UncappedOnly</WhoMayShare>\n"
+            + "  <TvSharingPlaylists>false</TvSharingPlaylists>\n"
+            + "</PluginConfiguration>\n";
+
+        var config = (PluginConfiguration)new XmlSerializer(typeof(PluginConfiguration)).Deserialize(new StringReader(old))!;
+
+        Assert.Equal("/srv/shares", config.ShareRoot);
+        Assert.Equal(WhoMayShare.UncappedOnly, config.WhoMayShare);
+        Assert.False(config.TvSharingPlaylists);
+        Assert.NotNull(config.AllowedSharers);
+        Assert.Empty(config.AllowedSharers);
     }
 
     // The id is how servers and repositories know the plugin: it must never change once published.

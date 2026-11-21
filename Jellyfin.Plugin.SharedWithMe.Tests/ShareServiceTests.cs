@@ -23,6 +23,7 @@ public sealed class ShareServiceTests : IDisposable
     private readonly PluginGate _gate = new();
     private readonly TestBuilder _builder = new();
     private WhoMayShare _who = WhoMayShare.Everyone;
+    private Guid[] _allowed = Array.Empty<Guid>();
 
     private readonly Guid _lib = Guid.NewGuid();
     private readonly Guid _adult = Guid.NewGuid();
@@ -58,7 +59,7 @@ public sealed class ShareServiceTests : IDisposable
     private ShareService Sut()
     {
         _gw.ShareRoot = _shareRoot;
-        var eligibility = new ShareEligibility(_gw, _store, () => _who);
+        var eligibility = new ShareEligibility(_gw, _store, () => _who, () => _allowed);
         var access = new LibraryAccessManager(_gw, _store);
         return new ShareService(_gw, _store, eligibility, access, _builder, () => _shareRoot, _gate, NullLogger.Instance, _probe);
     }
@@ -358,6 +359,38 @@ public sealed class ShareServiceTests : IDisposable
         _who = WhoMayShare.UncappedOnly;
         Assert.Empty(Sut().RecipientsFor(_kid1));
         Assert.NotEmpty(Sut().RecipientsFor(_adult));
+    }
+
+    [Fact]
+    public void RecipientsFor_with_selected_profiles_lists_people_for_administrators_and_listed_profiles_only()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        _allowed = new[] { _kid1 };
+
+        Assert.NotEmpty(Sut().RecipientsFor(_admin));
+        Assert.Contains(Sut().RecipientsFor(_kid1), u => u.Id == _kid2);
+        Assert.Empty(Sut().RecipientsFor(_adult));
+        Assert.Empty(Sut().RecipientsFor(_kid2));
+    }
+
+    [Fact]
+    public void Create_with_selected_profiles_refuses_an_unlisted_sharer_and_keeps_the_shares_of_one_taken_off()
+    {
+        _who = WhoMayShare.SelectedProfiles;
+        _allowed = new[] { _adult };
+        var (made, record) = Sut().Create(_adult, _film, _kid1);
+        Assert.Equal(Refusal.None, made.Refusal);
+        Assert.NotNull(record);
+
+        _allowed = Array.Empty<Guid>();
+        var (refused, none) = Sut().Create(_adult, _film2, _kid1);
+        Assert.Equal(Refusal.SharingNotAllowed, refused.Refusal);
+        Assert.Null(none);
+        Assert.Equal(new[] { record!.Id }, _store.All().Where(r => r.State == ShareState.Active).Select(r => r.Id));
+
+        var (byAdmin, adminRecord) = Sut().Create(_admin, _film2, _kid1);
+        Assert.Equal(Refusal.None, byAdmin.Refusal);
+        Assert.NotNull(adminRecord);
     }
 
     // Review Focus 4.

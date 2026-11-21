@@ -70,8 +70,14 @@
                             <option value="Everyone">Everyone</option>
                             <option value="UncappedOnly">Only profiles without an age limit</option>
                             <option value="AdminsOnly">Only administrators</option>
+                            <option value="SelectedProfiles">Administrators and the profiles ticked below</option>
                         </select>
                     </div>
+                    <fieldset id="swm-sharers" class="hide">
+                        <legend>Profiles that may share</legend>
+                        <div class="fieldDescription">Administrators may always share. A profile taken off this list keeps the shares it made; remove them above.</div>
+                        <div id="swm-sharers-list"></div>
+                    </fieldset>
                     <div class="inputContainer">
                         <input is="emby-input" type="text" id="swm-root" label="Share folder" autocomplete="off" />
                         <div class="fieldDescription">The folder that holds the shared copies. Leave it empty to use the server's data folder. It must be outside every library and support symbolic links.</div>

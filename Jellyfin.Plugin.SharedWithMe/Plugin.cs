@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Jellyfin.Plugin.SharedWithMe.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -85,7 +86,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     /// <summary>
     /// Saves a new configuration (the dashboard and <c>POST /Plugins/{id}/Configuration</c> both end here). While the
-    /// plugin is in charge a changed ShareRoot is refused: the old one is kept, every other field is applied.
+    /// plugin is in charge a changed ShareRoot is refused: the old one is kept, every other field is applied. The list of
+    /// chosen sharers is tidied (no empty ids, no repeats). Every save queues the playlists pass, so a change of who may
+    /// share, or of the chosen sharers, adds and removes the "Share with" playlists to match.
     /// </summary>
     /// <param name="configuration">The new configuration.</param>
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
@@ -95,6 +98,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             base.UpdateConfiguration(configuration);
             return;
         }
+
+        next.AllowedSharers = (next.AllowedSharers ?? Array.Empty<Guid>()).Where(id => id != Guid.Empty).Distinct().ToArray();
 
         void Save(bool inCharge)
         {

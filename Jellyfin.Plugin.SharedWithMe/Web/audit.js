@@ -230,12 +230,58 @@ export default function (view) {
         }
     }
 
+    // Guids compared whatever their written form (with or without dashes, any case).
+    function sameId(a, b) {
+        return String(a).replace(/-/g, '').toLowerCase() === String(b).replace(/-/g, '').toLowerCase();
+    }
+
+    function showSharers() {
+        $('swm-sharers').classList.toggle('hide', $('swm-who').value !== 'SelectedProfiles');
+    }
+
+    // One checkbox per enabled profile that is not an administrator (administrators may always share), ticked when the
+    // saved list holds it.
+    async function renderSharers(allowed) {
+        const host = $('swm-sharers-list');
+        host.replaceChildren();
+        const users = (await ApiClient.getUsers())
+            .filter((u) => !(u.Policy && (u.Policy.IsAdministrator || u.Policy.IsDisabled)))
+            .sort((a, b) => a.Name.localeCompare(b.Name));
+        if (!users.length) {
+            host.appendChild(el('p', 'There is no profile other than administrators.'));
+        }
+
+        for (const user of users) {
+            const box = el('div');
+            box.className = 'checkboxContainer';
+            const label = el('label');
+            // Plain createElement: the web client wraps it and throws on the options form ({ is: ... }).
+            const input = el('input');
+            input.type = 'checkbox';
+            input.setAttribute('is', 'emby-checkbox');
+            input.className = 'swm-sharer';
+            input.value = user.Id;
+            input.dataset.name = user.Name;
+            input.checked = allowed.some((id) => sameId(id, user.Id));
+            label.appendChild(input);
+            label.appendChild(el('span', user.Name));
+            box.appendChild(label);
+            host.appendChild(box);
+        }
+    }
+
+    function tickedSharers() {
+        return Array.from(view.querySelectorAll('#swm-sharers-list input.swm-sharer')).filter((i) => i.checked);
+    }
+
     async function loadSettings() {
         try {
             const config = await ApiClient.getPluginConfiguration(PLUGIN_ID);
             $('swm-who').value = config.WhoMayShare || 'Everyone';
             $('swm-root').value = config.ShareRoot || '';
             $('swm-tv').checked = config.TvSharingPlaylists !== false;
+            await renderSharers(config.AllowedSharers || []);
+            showSharers();
         } catch (e) {
             say($('swm-settings-status'), 'Could not load the settings.');
         }
@@ -353,6 +399,7 @@ export default function (view) {
         try {
             const config = await ApiClient.getPluginConfiguration(PLUGIN_ID);
             config.WhoMayShare = $('swm-who').value;
+            config.AllowedSharers = tickedSharers().map((i) => i.value);
             config.TvSharingPlaylists = $('swm-tv').checked;
             if (!$('swm-root').disabled) {
                 config.ShareRoot = $('swm-root').value.trim();
@@ -362,7 +409,10 @@ export default function (view) {
             await load();
             await loadSettings();
             await loadNotes();
-            say(status, 'Settings saved. Sharing from TV apps: ' + ($('swm-tv').checked ? 'on' : 'off') + '.' + (audit && audit.SetupProblem ? ' There is still a setup problem, shown at the top of the page.' : ''));
+            const sharers = $('swm-who').value === 'SelectedProfiles'
+                ? ' Profiles that may share besides administrators: ' + (tickedSharers().map((i) => i.dataset.name).join(', ') || 'none') + '.'
+                : '';
+            say(status, 'Settings saved.' + sharers + ' Sharing from TV apps: ' + ($('swm-tv').checked ? 'on' : 'off') + '.' + (audit && audit.SetupProblem ? ' There is still a setup problem, shown at the top of the page.' : ''));
         } catch (err) {
             say(status, 'Settings were not saved. ' + (err && err.status ? 'The server answered ' + err.status + '.' : ''));
         } finally {
@@ -433,6 +483,7 @@ export default function (view) {
     $('swm-add-share').addEventListener('click', share);
     $('swm-check').addEventListener('click', checkNow);
     $('swm-settings-form').addEventListener('submit', saveSettings);
+    $('swm-who').addEventListener('change', showSharers);
     $('swm-restore').addEventListener('click', restore);
 
     view.addEventListener('viewshow', () => {
