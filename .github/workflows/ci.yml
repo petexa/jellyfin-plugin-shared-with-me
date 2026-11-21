@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet build Jellyfin.Plugin.SharedWithMe/Jellyfin.Plugin.SharedWithMe.csproj -c Release --nologo
+      - name: Unit tests
+        run: dotnet test Jellyfin.Plugin.SharedWithMe.Tests/Jellyfin.Plugin.SharedWithMe.Tests.csproj -c Release --nologo
+      - name: The manifest names this version
+        run: |
+          python3 - <<'PY'
+          import json, re
+          csproj = open("Jellyfin.Plugin.SharedWithMe/Jellyfin.Plugin.SharedWithMe.csproj").read()
+          version = re.search(r"<Version>([0-9.]+)</Version>", csproj).group(1)
+          versions = [v["version"] for v in json.load(open("manifest.json"))[0]["versions"]]
+          assert version in versions, f"manifest.json has no entry for {version} (has {versions})"
+          print("manifest lists", version)
+          PY
