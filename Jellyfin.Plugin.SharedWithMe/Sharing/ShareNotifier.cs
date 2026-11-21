@@ -99,8 +99,8 @@ public sealed class ShareNotifier
     public static string MessageFor(string eventName, string sharer, string recipient, string title) => eventName switch
     {
         ApprovalNeededEvent => $"{sharer} is waiting for approval to share {title} with {recipient}.",
-        ApprovedEvent => $"{sharer} may now share {title} with {recipient}: it was approved.",
-        DeclinedEvent => $"{sharer} may not share {title} with {recipient}: it was declined.",
+        ApprovedEvent => $"{sharer}'s share of {title} with {recipient} was approved.",
+        DeclinedEvent => $"{sharer}'s share of {title} with {recipient} was declined.",
         _ => $"{sharer} shared {title} with {recipient}.",
     };
 

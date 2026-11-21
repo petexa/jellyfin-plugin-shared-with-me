@@ -305,7 +305,7 @@ try:
     assert audit()["AwaitingApproval"] == []
     wait(lambda: events(m2), "the approved message")
     assert [e["event"] for e in events(m2)] == ["approved"], events(m2)
-    assert events(m2)[0]["message"] == "kid1 may now share Spike Fifteen with kid2: it was approved.", events(m2)
+    assert events(m2)[0]["message"] == "kid1's share of Spike Fifteen with kid2 was approved.", events(m2)
     assert approve(pending["Id"])[0] == 404
 
     step("a second request is declined with a note: it is gone for good and kid1 sees why")

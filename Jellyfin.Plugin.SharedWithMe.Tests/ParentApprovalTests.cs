@@ -650,7 +650,7 @@ public sealed class ParentApprovalTests : IDisposable
             new[]
             {
                 new NotifyBody("approval-needed", "Sam is waiting for approval to share Spike Fifteen with Jo.", "Sam", "Jo", "Spike Fifteen"),
-                new NotifyBody("declined", "Sam may not share Spike Fifteen with Jo: it was declined.", "Sam", "Jo", "Spike Fifteen"),
+                new NotifyBody("declined", "Sam's share of Spike Fifteen with Jo was declined.", "Sam", "Jo", "Spike Fifteen"),
                 new NotifyBody("shared", "Alex shared Spike Eighteen with Jo.", "Alex", "Jo", "Spike Eighteen"),
             },
             sent);
@@ -664,7 +664,7 @@ public sealed class ParentApprovalTests : IDisposable
         Assert.Equal(
             new[] { "event", "message", "sharer", "recipient", "title" },
             JsonDocument.Parse(_sent.First().Body).RootElement.EnumerateObject().Select(p => p.Name));
-        Assert.Equal("Sam may now share Spike Fifteen with Jo: it was approved.", ShareNotifier.MessageFor(ShareNotifier.ApprovedEvent, "Sam", "Jo", "Spike Fifteen"));
+        Assert.Equal("Sam's share of Spike Fifteen with Jo was approved.", ShareNotifier.MessageFor(ShareNotifier.ApprovedEvent, "Sam", "Jo", "Spike Fifteen"));
     }
 
     [Fact]
