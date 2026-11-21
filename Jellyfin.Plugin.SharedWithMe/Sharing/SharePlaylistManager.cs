@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using Jellyfin.Plugin.SharedWithMe.Configuration;
 using Jellyfin.Plugin.SharedWithMe.Model;
 using Jellyfin.Plugin.SharedWithMe.Storage;
 using Microsoft.Extensions.Logging;
@@ -33,6 +34,7 @@ public class SharePlaylistManager
     private readonly PluginGate _gate;
     private readonly ILogger _logger;
     private readonly Func<DateTime> _utcNow;
+    private readonly Func<int> _tvShareDays;
 
     // Shares whose mirror into the playlist did not take (the server would not store the item): not retried on every
     // playlist event, only on the next full run, so a mirror that cannot succeed never loops.
@@ -52,8 +54,10 @@ public class SharePlaylistManager
     /// <param name="gate">The process-wide serialiser.</param>
     /// <param name="logger">Logger.</param>
     /// <param name="utcNow">Clock; defaults to <see cref="DateTime.UtcNow"/>.</param>
-    public SharePlaylistManager(IServerGateway gateway, ShareStore store, ShareService service, ShareEligibility eligibility, LibraryAccessManager access, Func<bool> enabled, Func<string?> setupProblem, PluginGate gate, ILogger logger, Func<DateTime>? utcNow = null)
+    /// <param name="tvShareDays">Reads how many days a share made from a playlist lasts (0: until removed); none when null.</param>
+    public SharePlaylistManager(IServerGateway gateway, ShareStore store, ShareService service, ShareEligibility eligibility, LibraryAccessManager access, Func<bool> enabled, Func<string?> setupProblem, PluginGate gate, ILogger logger, Func<DateTime>? utcNow = null, Func<int>? tvShareDays = null)
     {
+        _tvShareDays = tvShareDays ?? (() => 0);
         _gateway = gateway;
         _store = store;
         _service = service;
@@ -512,11 +516,22 @@ public class SharePlaylistManager
         var titles = Titles(entries.ItemIds, out var others);
 
         // 1. Shares the synchronizer closed or broke leave the playlist; only a Broken one has something to tell.
+        // An expired share is the one closed share that sharing again would NOT refuse, so it lets go of the playlist only
+        // once its entry is really gone (read back). Until then the record keeps the title, which is left out of step 3 on
+        // every pass, so an entry the server kept never comes back as a new share.
         foreach (var r in records.Where(r => r.ViaPlaylist && r.State != ShareState.Active))
         {
+            var expired = r.State == ShareState.Closed && r.StateReason == ShareSynchronizer.ExpiredReason;
             if (titles.ContainsKey(r.OriginalItemId))
             {
                 _gateway.RemoveFromPlaylist(playlistId, r.OriginalItemId);
+                if (expired && (_gateway.GetPlaylistEntries(playlistId) is not { } after || Titles(after.ItemIds, out _).ContainsKey(r.OriginalItemId)))
+                {
+                    _logger.LogWarning("Shared With Me: the expired {Title} could not be taken out of playlist {PlaylistId}; it is not shared again", r.Title, playlistId);
+                    titles.Remove(r.OriginalItemId);
+                    continue;
+                }
+
                 titles.Remove(r.OriginalItemId);
                 if (r.State == ShareState.Broken)
                 {
@@ -535,8 +550,11 @@ public class SharePlaylistManager
             Note(sharer, recipient, VisibleTitle(sharer, other), "Only movies and series can be shared.");
         }
 
-        // 3. Every title in the playlist without an Active share from this sharer is shared, or taken out.
+        // 3. Every title in the playlist without an Active share from this sharer is shared, or taken out. A share made
+        // here gets the TV end date (TvShareDays), counted from now.
         var active = _store.All().Where(r => r.SharerUserId == sharer && r.RecipientUserId == recipient && r.State == ShareState.Active).ToList();
+        var days = Math.Clamp(_tvShareDays(), 0, PluginConfiguration.MaxShareDays);
+        DateTime? expires = days > 0 ? _utcNow().AddDays(days) : null;
         foreach (var title in titles.Keys.ToList())
         {
             if (active.FirstOrDefault(r => r.OriginalItemId == title) is { } existing)
@@ -553,7 +571,7 @@ public class SharePlaylistManager
             ShareRecord? record;
             try
             {
-                (decision, record) = _service.Create(sharer, title, recipient);
+                (decision, record) = _service.Create(sharer, title, recipient, expires);
             }
             catch (Exception ex)
             {

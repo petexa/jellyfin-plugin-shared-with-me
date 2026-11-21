@@ -105,6 +105,56 @@
         return isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
     }
 
+    // When a share ends, as the person reads it: a date and a time, or "until removed".
+    function until(utc) {
+        if (!utc) {
+            return 'until removed';
+        }
+
+        const d = new Date(utc);
+        return isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // The check-shares run ends an expired share within seconds; until it has, the page already says "expired".
+    function expired(s) {
+        return (s.State === 'Closed' && s.StateReason === 'expired')
+            || (s.State !== 'Closed' && !!s.ExpiresUtc && new Date(s.ExpiresUtc).getTime() <= Date.now());
+    }
+
+    function localDay(date) {
+        const pad = (n) => String(n).padStart(2, '0');
+        return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+    }
+
+    // The "Keep it" choice as the end time to send (UTC), null for "until I remove it". A date means the end of that day
+    // in this browser's time zone. The server refuses a time that has passed or is more than 366 days ahead.
+    function keepUntil() {
+        const keep = $('swm-keep').value;
+        if (keep === 'day' || keep === 'week') {
+            return { ok: true, value: new Date(Date.now() + (keep === 'day' ? 1 : 7) * 86400000).toISOString() };
+        }
+
+        if (keep !== 'date') {
+            return { ok: true, value: null };
+        }
+
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec($('swm-until').value);
+        if (!m) {
+            return { ok: false, message: 'Choose the last day of the share first.' };
+        }
+
+        const end = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1);
+        if (end.getTime() <= Date.now()) {
+            return { ok: false, message: 'That day has already passed. Choose today or a later day.' };
+        }
+
+        return { ok: true, value: end.toISOString() };
+    }
+
+    function renderKeep() {
+        $('swm-until-area').hidden = $('swm-keep').value !== 'date';
+    }
+
     function signedOut(message) {
         $('swm-content').hidden = true;
         $('swm-signin').hidden = false;
@@ -122,8 +172,8 @@
         }
 
         $('swm-mine-hidden').hidden = !(res.data.HiddenCount > 0);
-        // Only the caller's own shares (an administrator's list holds everyone's).
-        const shares = res.data.Shares.filter((s) => s.SharerUserId === myId && s.State !== 'Closed');
+        // Only the caller's own shares (an administrator's list holds everyone's); a closed one only when it expired.
+        const shares = res.data.Shares.filter((s) => s.SharerUserId === myId && (s.State !== 'Closed' || expired(s)));
         $('swm-mine-empty').hidden = shares.length > 0;
         table.hidden = shares.length === 0;
         for (const s of shares) {
@@ -133,12 +183,16 @@
             row.appendChild(el('td', title));
             row.appendChild(el('td', who));
             row.appendChild(el('td', day(s.CreatedUtc)));
-            row.appendChild(el('td', s.State === 'Active' ? 'shared' : s.State + (s.StateReason ? ': ' + s.StateReason : '')));
+            row.appendChild(el('td', until(s.ExpiresUtc)));
+            row.appendChild(el('td', expired(s) ? 'expired' : s.State === 'Active' ? 'shared' : s.State + (s.StateReason ? ': ' + s.StateReason : '')));
             const cell = el('td');
-            const undo = el('button', 'Undo');
-            undo.type = 'button';
-            undo.addEventListener('click', () => undoShare(s, title, who, undo));
-            cell.appendChild(undo);
+            if (s.State !== 'Closed') {
+                const undo = el('button', 'Undo');
+                undo.type = 'button';
+                undo.addEventListener('click', () => undoShare(s, title, who, undo));
+                cell.appendChild(undo);
+            }
+
             row.appendChild(cell);
             body.appendChild(row);
         }
@@ -161,6 +215,7 @@
             row.appendChild(el('td', titleWithYear(s.Title, s.Year)));
             row.appendChild(el('td', s.SharerName));
             row.appendChild(el('td', day(s.CreatedUtc)));
+            row.appendChild(el('td', until(s.ExpiresUtc)));
             body.appendChild(row);
         }
     }
@@ -284,18 +339,26 @@
             return;
         }
 
+        const keep = keepUntil();
+        if (!keep.ok) {
+            status.textContent = keep.message;
+            return;
+        }
+
         const who = select.options[select.selectedIndex].textContent;
         const title = titleWithYear(picked.Title, picked.Year);
         status.textContent = 'Sharing...';
         const button = $('swm-share');
         button.disabled = true;
-        const res = await api('POST', '/SharedWithMe/Shares', { ItemId: picked.Id, RecipientUserId: select.value });
+        const res = await api('POST', '/SharedWithMe/Shares', { ItemId: picked.Id, RecipientUserId: select.value, ExpiresUtc: keep.value });
         button.disabled = false;
         if (res.ok) {
             await loadMine();
         }
 
-        status.textContent = res.ok ? 'Shared "' + title + '" with ' + who + '.' : failure(res);
+        status.textContent = res.ok
+            ? 'Shared "' + title + '" with ' + who + (res.data && res.data.ExpiresUtc ? ' until ' + until(res.data.ExpiresUtc) : '') + '.'
+            : failure(res);
     }
 
     async function start() {
@@ -353,6 +416,9 @@
 
     $('swm-search-form').addEventListener('submit', search);
     $('swm-recipient').addEventListener('change', renderTv);
+    $('swm-keep').addEventListener('change', renderKeep);
+    $('swm-until').min = localDay(new Date());
+    $('swm-until').max = localDay(new Date(Date.now() + 365 * 86400000));
     $('swm-notes-clear').addEventListener('click', clearNotes);
     $('swm-share').addEventListener('click', share);
     start();

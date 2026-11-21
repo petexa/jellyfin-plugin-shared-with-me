@@ -1133,6 +1133,31 @@ public sealed class AuditServiceTests : IDisposable
         Assert.Empty(Sut().Received(_kid1));
     }
 
+    // 0.2, B: a share whose time is up is gone from the recipient's list at once, before the sync has ended it; the audit
+    // row carries the end time and says it has expired.
+    [Fact]
+    public void An_expired_share_leaves_Received_at_once_and_the_audit_row_says_so()
+    {
+        var r = Share(_film, _kid1);
+        RegisterCopy(r);
+        _store.Upsert(Stored(r.Id) with { ExpiresUtc = _now.AddSeconds(1) });
+
+        var row = AuditOf(Sut().Build(), _kid1, r.Id);
+        Assert.Equal(_now.AddSeconds(1), row.ExpiresUtc);
+        Assert.False(row.Expired);
+        Assert.Equal(_now.AddSeconds(1), Assert.Single(Sut().Received(_kid1)).ExpiresUtc);
+
+        _store.Upsert(Stored(r.Id) with { ExpiresUtc = _now });
+
+        Assert.Empty(Sut().Received(_kid1));
+        Assert.True(AuditOf(Sut().Build(), _kid1, r.Id).Expired);
+
+        _store.Upsert(Stored(r.Id) with { State = ShareState.Closed, StateReason = ShareSynchronizer.ExpiredReason, FolderName = string.Empty });
+        row = AuditOf(Sut().Build(), _kid1, r.Id);
+        Assert.False(row.Expired); // ended: the state says it
+        Assert.Equal((ShareState.Closed, "expired"), (row.State, row.StateReason));
+    }
+
     [Fact]
     public void SharedBy_hides_a_title_the_sharer_can_no_longer_see()
     {

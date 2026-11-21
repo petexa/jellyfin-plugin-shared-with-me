@@ -19,6 +19,28 @@ public class PluginIdentityTests
         Assert.Equal(string.Empty, config.ShareRoot);
         Assert.Equal(WhoMayShare.Everyone, config.WhoMayShare);
         Assert.Empty(config.AllowedSharers);
+        Assert.Equal(0, config.TvShareDays);
+    }
+
+    // 0.2, B: how long a share made from a TV playlist lasts, through both forms the settings travel in, held to 0..366.
+    [Fact]
+    public void TvShareDays_survives_a_save_and_load_and_is_held_to_0_to_366()
+    {
+        var config = new PluginConfiguration { TvShareDays = 7 };
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+        var xml = new StringWriter();
+        serializer.Serialize(xml, config);
+        Assert.Equal(7, ((PluginConfiguration)serializer.Deserialize(new StringReader(xml.ToString()))!).TvShareDays);
+
+        var json = new JsonSerializerOptions { Converters = { new JsonStringEnumConverter() } };
+        Assert.Equal(7, JsonSerializer.Deserialize<PluginConfiguration>(JsonSerializer.Serialize(config, json), json)!.TvShareDays);
+
+        Assert.Equal(0, new PluginConfiguration { TvShareDays = -5 }.TvShareDays);
+        Assert.Equal(366, new PluginConfiguration { TvShareDays = 366 }.TvShareDays);
+        Assert.Equal(366, new PluginConfiguration { TvShareDays = 1000 }.TvShareDays);
+        Assert.Equal(366, JsonSerializer.Deserialize<PluginConfiguration>("{\"TvShareDays\":9999}", json)!.TvShareDays);
+        var edited = xml.ToString().Replace("<TvShareDays>7</TvShareDays>", "<TvShareDays>-3</TvShareDays>", StringComparison.Ordinal);
+        Assert.Equal(0, ((PluginConfiguration)serializer.Deserialize(new StringReader(edited))!).TvShareDays);
     }
 
     // The server keeps the settings as XML (System.Xml.Serialization) and the dashboard sends them as JSON with enums as
@@ -62,6 +84,7 @@ public class PluginIdentityTests
         Assert.False(config.TvSharingPlaylists);
         Assert.NotNull(config.AllowedSharers);
         Assert.Empty(config.AllowedSharers);
+        Assert.Equal(0, config.TvShareDays); // no TvShareDays (before 0.2, B): TV shares last until removed, as before
     }
 
     // The id is how servers and repositories know the plugin: it must never change once published.

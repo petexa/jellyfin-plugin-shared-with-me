@@ -140,7 +140,8 @@ By hand:
   users need the address: there is no menu entry for them.
 - **Audit page (administrators):** Dashboard, Plugins, Shared With Me. It shows every profile and the shares it received:
   - who shared each title, and whether the profile can see it right now (asked of the server, not read from settings);
-  - the settings: who may share, the share folder, sharing from TV apps;
+  - the settings: who may share, the share folder, sharing from TV apps and how many days a share made from a TV app lasts;
+  - when each share ends ("until removed" or a date), and "expired" afterwards;
   - "Add title", "Check now", and "Restore everyone".
 - **TV apps:** each user who may share gets a private playlist `Share with <name>` for each profile with restrictions.
   Adding a film, a series, or any episode of a series to it shares that title with that profile; taking it out stops
@@ -167,6 +168,15 @@ By hand:
   none of the episodes any more (for example their own age limit was lowered), the share ends and the audit page shows it
   as broken with the reason "original missing", although the original is still there. If the sharer's profile is
   deleted, the share stays, but episodes with a rating of their own that differs from the series' are no longer added.
+- **Shares can end by themselves.** On the share page and under "Add title" on the audit page, "Keep it" offers: until I
+  remove it (the default), 1 day, 1 week, or until a date (the end of that day, in the browser's time zone). Through the
+  API, send `ExpiresUtc` (an ISO time, UTC) with the share; any time in the future up to 366 days ahead is accepted. A TV
+  app has no way to choose, so the setting "Days a share made from a TV app lasts" (0, the default, keeps it until it is
+  removed; at most 366) gives every share made from a `Share with <name>` playlist that end date. Shares made on the
+  share page keep their own choice. When the time is up the share ends as if it had been removed, within about 15
+  seconds: the copy and, if it was the last one, the share library go, the title is taken out of the playlist, and the
+  pages show the share as expired (kept on the audit page for 30 days). An end date never gives anyone more: sharing the
+  title again is a new share.
 - **No passing on.** A profile cannot share a title it can see only because it was shared with it, unless it could see
   the original anyway.
 - **When files are replaced** (renamed, or a new version): after a library scan the share follows the title, if the
@@ -204,7 +214,9 @@ By hand:
 - Not tested on a real TV client at the time of writing. Sharing through playlists was tested through the server's API.
 - Do not downgrade the plugin: a share record written by a newer version may be refused, or partly ignored, by an older
   one. Set "Who may share" to a value 0.1 knows before going back to 0.1: it does not know "administrators and the
-  profiles you tick", and may then fail to read its settings and fall back to the default, everyone.
+  profiles you tick", and may then fail to read its settings and fall back to the default, everyone. Versions before 0.2's
+  expiring shares do not know end dates: they ignore them and write the record back without them, so every share with an
+  end date then lasts until it is removed. Remove those shares first.
 
 ## Jellyfin behaviour you should know about
 

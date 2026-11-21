@@ -303,6 +303,9 @@ public sealed class FakeServerGateway : IServerGateway
     /// <summary>Every playlist on the fake server, plugin-made or not.</summary>
     public Dictionary<Guid, FakePlaylist> Playlists { get; } = new();
 
+    /// <summary>When true, <see cref="RemoveFromPlaylist"/> silently removes nothing.</summary>
+    public bool IgnoreRemoveFromPlaylist { get; set; }
+
     /// <summary>Every playlist write (create, rename, private, remove, add, remove entries) in order.</summary>
     public List<(string Method, Guid PlaylistId)> PlaylistWrites { get; } = new();
 
@@ -459,6 +462,11 @@ public sealed class FakeServerGateway : IServerGateway
     public void RemoveFromPlaylist(Guid playlistId, Guid itemId)
     {
         Hit(nameof(RemoveFromPlaylist), playlistId, itemId);
+        if (IgnoreRemoveFromPlaylist)
+        {
+            return; // as the real gateway does when it cannot resolve the entries: nothing removed, nothing thrown
+        }
+
         if (Playlists.TryGetValue(playlistId, out var p)
             && p.Items.RemoveAll(i => i == itemId || (Items.TryGetValue(i, out var e) && e.SeriesId == itemId)) > 0)
         {

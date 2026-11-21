@@ -187,7 +187,7 @@ reading settings.
 ## API (authenticated, under `/SharedWithMe`)
 
 - `GET /Shares` mine; all of them for an admin
-- `POST /Shares` `{ itemId, recipientUserId }`
+- `POST /Shares` `{ itemId, recipientUserId }` (0.2 adds an optional `expiresUtc`, see B below)
 - `DELETE /Shares/{id}` sharer, or an admin
 - `GET /Recipients` profiles I can share with
 - `GET /Audit` admin only, includes live visibility per share
@@ -293,6 +293,36 @@ is the expiry applied to shares made from a TV playlist, which has no way to cho
 whose `ExpiresUtc` has passed, exactly as if it had been removed: state Closed, reason "expired", copy and library entry
 removed, playlist entry taken out. The audit page and the share page show the expiry and say "expired" afterwards.
 Expiry never extends access. A record whose expiry cannot be read is treated as not expired only if it was never set.
+
+Builder's calls (2026-11-21):
+- **Accepted end times.** `POST /Shares` takes `ExpiresUtc`, an ISO timestamp read as UTC (one without an offset is taken as
+  UTC). Any time after now is accepted, so a share for the next few minutes is possible; a time at or before now, or more
+  than 366 days ahead, is refused as `InvalidExpiry` with a plain sentence, before anything is checked or changed. The
+  pages offer 1 day, 1 week, or a last day (the share ends at the end of that day in the browser's time zone, sent as UTC;
+  the date picker offers today to 365 days ahead).
+- **`TvShareDays`** is held to 0..366 by the setting itself, so a hand-edited settings file is held too. A playlist share
+  ends `TvShareDays` days after the moment the playlist pass shares it. Web shares mirrored into a playlist keep their own
+  end time (none, if none was chosen).
+- **Order in the check.** Expiry is the first rule after "recipient gone" and the Closed skip, ahead of "could not
+  remove" (5b): a copy that could not be removed at expiry is retried there, and the record ends Closed "expired" rather
+  than being deleted as a removed share is. Active and Broken shares expire (`ShareRecord.IsExpired`, the one test every
+  caller uses; C's `Pending` stays out of it by construction).
+- **Not revived by the playlist.** "Expired" is the one closed reason that sharing again would not refuse, so a playlist
+  entry the server keeps would come back as a new share. An expired record lets go of the playlist (`ViaPlaylist` false)
+  only after the entry is read back as gone; until then its title is left out of the "share what is in the playlist"
+  step. A title its owner puts back in the playlist later is a new share with a new end time.
+- **Unreadable end time.** A present value that is not a timestamp (a word, a number, an object) loads as
+  `DateTime.MinValue`, so the share ends; absent or `null` is "until removed". The rest of the file loads as before.
+- **Prompt expiry: a 10-second poll, not a timer per share.** `SyncHost` runs a timer every 10 s that asks `ExpiryWatch`
+  whether any Active or Broken share's end time has come up since it last said yes; only then is one full run queued
+  (the existing `SyncWorker` path, 1 s debounce). Rejected: scheduling the run at the nearest `ExpiresUtc`, which would
+  need rescheduling on every create, remove, settings save and restart, and a second code path into the worker; the poll
+  reads one small file and has no state to lose. A share whose run could not end it is not asked for on every tick (the
+  watermark moves on); every later full run retries it. Until the run has ended it, the share page's "Shared with you"
+  leaves an expired share out and the audit page says "expired (ending now)". Measured on the test server: closed about
+  5 s after the end time.
+- Shares made by 0.2 can carry `ExpiresUtc`; 0.1 and 0.2-A ignore the member and would write the record back without it
+  (README, downgrade).
 
 ### C. Parent approval
 

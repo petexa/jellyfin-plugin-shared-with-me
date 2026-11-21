@@ -22,6 +22,11 @@ public enum WhoMayShare
 /// <summary>Plugin settings.</summary>
 public class PluginConfiguration : BasePluginConfiguration
 {
+    /// <summary>The longest a share may be kept for when it has an end date, in days.</summary>
+    public const int MaxShareDays = 366;
+
+    private int _tvShareDays;
+
     /// <summary>Gets or sets the folder that holds the share libraries. Empty means &lt;data path&gt;/shared-with-me.</summary>
     public string ShareRoot { get; set; } = string.Empty;
 
@@ -40,4 +45,15 @@ public class PluginConfiguration : BasePluginConfiguration
     /// shares stay.
     /// </summary>
     public bool TvSharingPlaylists { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets how many days a share made from a "Share with" playlist lasts (a TV app has no way to choose); 0, the
+    /// default, keeps it until it is removed. Any value is held to 0 to <see cref="MaxShareDays"/>, whether it comes from a
+    /// save or from the settings file.
+    /// </summary>
+    public int TvShareDays
+    {
+        get => _tvShareDays;
+        set => _tvShareDays = Math.Clamp(value, 0, MaxShareDays);
+    }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Jellyfin.Plugin.SharedWithMe.Configuration;
 using Jellyfin.Plugin.SharedWithMe.Model;
 using Jellyfin.Plugin.SharedWithMe.Storage;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,12 @@ public class ShareService
     /// <summary>State reason for a share whose copy could not be removed.</summary>
     public const string CouldNotRemoveReason = "could not remove the shared copy";
 
+    /// <summary>What the sharer sees when the chosen end time has already passed.</summary>
+    public const string ExpiryPastMessage = "That end time has already passed. Choose a later one, or keep the share until you remove it.";
+
+    /// <summary>What the sharer sees when the chosen end time is more than <see cref="PluginConfiguration.MaxShareDays"/> days away.</summary>
+    public const string ExpiryTooFarMessage = "A share can be kept for at most 366 days. Choose an earlier end date, or keep the share until you remove it.";
+
     /// <summary>Most search results returned.</summary>
     public const int SearchLimit = 30;
 
@@ -32,6 +39,7 @@ public class ShareService
     private readonly PluginGate _gate;
     private readonly ILogger _logger;
     private readonly Action<string> _probe;
+    private readonly Func<DateTime> _utcNow;
 
     /// <summary>Initializes a new instance of the <see cref="ShareService"/> class.</summary>
     /// <param name="gateway">The server seam.</param>
@@ -44,8 +52,10 @@ public class ShareService
     /// <param name="logger">Logger for details the sharer must not see.</param>
     /// <param name="probeShareRoot">Checks the share root can hold links; defaults to
     /// <see cref="ShareFolderBuilder.ProbeSymlinkSupport"/>.</param>
-    public ShareService(IServerGateway gateway, ShareStore store, ShareEligibility eligibility, LibraryAccessManager access, ShareFolderBuilder builder, Func<string> shareRoot, PluginGate gate, ILogger logger, Action<string>? probeShareRoot = null)
+    /// <param name="utcNow">Clock; defaults to <see cref="DateTime.UtcNow"/>.</param>
+    public ShareService(IServerGateway gateway, ShareStore store, ShareEligibility eligibility, LibraryAccessManager access, ShareFolderBuilder builder, Func<string> shareRoot, PluginGate gate, ILogger logger, Action<string>? probeShareRoot = null, Func<DateTime>? utcNow = null)
     {
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
         _probe = probeShareRoot ?? ShareFolderBuilder.ProbeSymlinkSupport;
         _gateway = gateway;
         _store = store;
@@ -66,16 +76,19 @@ public class ShareService
         Path.Combine(shareRoot, recipientId.ToString("N"), kind == ShareKind.Series ? "shows" : "movies");
 
     /// <summary>
-    /// Shares an item. Order: share-root sanity, check, probe the share root, isolate users, build the folder, ensure
-    /// the share library, record, queue a scan. Any exception once the folder exists removes the folder and the
-    /// record (or keeps the record as Broken when the folder cannot be removed), then rethrows the original exception.
+    /// Shares an item. Order: the end time, share-root sanity, check, probe the share root, isolate users, build the
+    /// folder, ensure the share library, record, queue a scan. Any exception once the folder exists removes the folder and
+    /// the record (or keeps the record as Broken when the folder cannot be removed), then rethrows the original exception.
     /// </summary>
     /// <param name="sharerId">Who is sharing.</param>
     /// <param name="itemId">What they are sharing.</param>
     /// <param name="recipientId">Who it is shared with.</param>
+    /// <param name="expiresUtc">When the share ends by itself (UTC); null keeps it until it is removed. Refused
+    /// (<see cref="Refusal.InvalidExpiry"/>) when it is not after now, or more than
+    /// <see cref="PluginConfiguration.MaxShareDays"/> days ahead.</param>
     /// <returns>The decision, and the new record when the share was made.</returns>
-    public (Decision decision, ShareRecord? record) Create(Guid sharerId, Guid itemId, Guid recipientId) =>
-        _gate.Run(() => CreateLocked(sharerId, itemId, recipientId));
+    public (Decision decision, ShareRecord? record) Create(Guid sharerId, Guid itemId, Guid recipientId, DateTime? expiresUtc = null) =>
+        _gate.Run(() => CreateLocked(sharerId, itemId, recipientId, expiresUtc));
 
     /// <summary>
     /// Removes a share. Only the sharer or an administrator may. A share listed in its sharer's "Share with" playlist is
@@ -155,11 +168,25 @@ public class ShareService
 
     private static Decision Refuse(Refusal reason, string message) => new(reason, message, null, new List<string>());
 
-    private (Decision decision, ShareRecord? record) CreateLocked(Guid sharerId, Guid itemId, Guid recipientId)
+    private (Decision decision, ShareRecord? record) CreateLocked(Guid sharerId, Guid itemId, Guid recipientId, DateTime? expiresUtc)
     {
         if (_gate.IsClosed)
         {
             return (Refuse(Refusal.ShareFolderUnusable, UninstallingMessage), null);
+        }
+
+        // The end time first: it says nothing about the item or the people, and nothing may change for a refused one.
+        // Any future time is allowed (a share for the next hour is fine); a time at or before now would never be live.
+        var now = _utcNow();
+        var expires = expiresUtc is { } e ? (e.Kind == DateTimeKind.Local ? e.ToUniversalTime() : DateTime.SpecifyKind(e, DateTimeKind.Utc)) : (DateTime?)null;
+        if (expires <= now)
+        {
+            return (Refuse(Refusal.InvalidExpiry, ExpiryPastMessage), null);
+        }
+
+        if (expires > now.AddDays(PluginConfiguration.MaxShareDays))
+        {
+            return (Refuse(Refusal.InvalidExpiry, ExpiryTooFarMessage), null);
         }
 
         // Before anything else (Check itself classifies libraries by the share root): a share root that overlaps a
@@ -231,10 +258,11 @@ public class ShareService
             sharerId,
             sharer.Name,
             recipientId,
-            DateTime.UtcNow,
+            now,
             ShareState.Active,
             null,
-            string.Empty);
+            string.Empty,
+            ExpiresUtc: expires);
 
         // Build cleans up its own temporary folder when it fails, so nothing is left before the folder exists.
         // Every copy carries its recipient's tag, which every other user blocks (see LibraryAccessManager).

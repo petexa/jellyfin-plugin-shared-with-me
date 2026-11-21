@@ -45,6 +45,9 @@ public enum Refusal
 
     /// <summary>The share folder cannot be created or cannot hold symbolic links. Decided by the share service, not by <see cref="ShareEligibility"/>.</summary>
     ShareFolderUnusable,
+
+    /// <summary>The chosen end time has passed or is too far ahead. Decided by the share service, not by <see cref="ShareEligibility"/>.</summary>
+    InvalidExpiry,
 }
 
 /// <summary>The answer to "may this share happen".</summary>

@@ -14,7 +14,7 @@ Known state:
     (test_tv_playlists.py renames kid1), TvSharingPlaylists back at its default (on). Reset keeps the setting off while it
     runs, then turns it on and runs one full sync: the plugin makes fresh "Share with" playlists and every user blocks
     the swm- tag of every other playlist owner (ruling B2); then quiet.
-  * plugin settings otherwise at their defaults: ShareRoot empty, WhoMayShare Everyone, no AllowedSharers
+  * plugin settings otherwise at their defaults: ShareRoot empty, WhoMayShare Everyone, no AllowedSharers, TvShareDays 0
 The plugin's store is removed FIRST: with no store the plugin is not in charge, so its background sync (user events,
 post-scan) changes nothing while this script runs. It is removed again at the end in case a run was in flight.
 The plugin keeps no share state in memory (ShareStore reads shares.json on every call), so no restart is needed.
@@ -115,8 +115,8 @@ run_remote("docker exec jf-share-spike sh -c 'find /shares -mindepth 1 -delete'\
 # 3. plugin configuration back to defaults (empty ShareRoot = <data path>/shared-with-me)
 s, cfg = call("GET", f"/Plugins/{PLUGIN}/Configuration", tok)
 assert s == 200, (s, cfg)
-if cfg.get("ShareRoot") or cfg.get("WhoMayShare") != "Everyone" or cfg.get("AllowedSharers"):
-    ok("plugin config", call("POST", f"/Plugins/{PLUGIN}/Configuration", tok, body={**cfg, "ShareRoot": "", "WhoMayShare": "Everyone", "AllowedSharers": []}))
+if cfg.get("ShareRoot") or cfg.get("WhoMayShare") != "Everyone" or cfg.get("AllowedSharers") or cfg.get("TvShareDays"):
+    ok("plugin config", call("POST", f"/Plugins/{PLUGIN}/Configuration", tok, body={**cfg, "ShareRoot": "", "WhoMayShare": "Everyone", "AllowedSharers": [], "TvShareDays": 0}))
     print("plugin configuration reset")
 
 # 3b. series media (Spike Show, Spike Kids; a stray S01E03 removed, a removed S01E01 made again)

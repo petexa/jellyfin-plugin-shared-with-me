@@ -22,6 +22,12 @@ public class CreateShareRequest
 
     /// <summary>Gets or sets the profile to share it with.</summary>
     public Guid RecipientUserId { get; set; }
+
+    /// <summary>
+    /// Gets or sets when the share ends by itself, an ISO 8601 timestamp read as UTC (one without an offset is taken as
+    /// UTC); null or absent keeps it until it is removed. Any future time up to 366 days ahead is accepted.
+    /// </summary>
+    public DateTime? ExpiresUtc { get; set; }
 }
 
 /// <summary>Why a share was refused.</summary>
@@ -312,9 +318,9 @@ public class SharedWithMeController : ControllerBase
         return withSummary ? Ok(result) : Ok(result.Shares);
     }
 
-    /// <summary>Shares an item with another profile.</summary>
-    /// <param name="request">The item and the recipient.</param>
-    /// <returns>The new share, or 409 with the refusal.</returns>
+    /// <summary>Shares an item with another profile, until it is removed or until <c>ExpiresUtc</c>.</summary>
+    /// <param name="request">The item, the recipient and, optionally, the end time.</param>
+    /// <returns>The new share, or 409 with the refusal (<c>InvalidExpiry</c> for an end time in the past or too far ahead).</returns>
     [HttpPost("Shares")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -332,7 +338,7 @@ public class SharedWithMeController : ControllerBase
             return BadRequest();
         }
 
-        var (decision, record) = _service.Create(me, request.ItemId, request.RecipientUserId);
+        var (decision, record) = _service.Create(me, request.ItemId, request.RecipientUserId, request.ExpiresUtc);
         if (record is null)
         {
             return Conflict(new RefusalResponse(decision.Refusal, decision.Message));

@@ -50,6 +50,18 @@
                 <div class="selectContainer">
                     <select is="emby-select" id="swm-add-profile" label="Share with"></select>
                 </div>
+                <div class="selectContainer">
+                    <select is="emby-select" id="swm-add-keep" label="Keep it">
+                        <option value="always">Until I remove it</option>
+                        <option value="day">For 1 day</option>
+                        <option value="week">For 1 week</option>
+                        <option value="date">Until a date</option>
+                    </select>
+                </div>
+                <div id="swm-add-until-area" class="inputContainer hide">
+                    <input is="emby-input" type="date" id="swm-add-until" label="Last day" />
+                    <div class="fieldDescription">The share ends at the end of that day.</div>
+                </div>
                 <button is="emby-button" type="button" id="swm-add-share" class="raised button-submit"><span>Share</span></button>
                 <p id="swm-add-status" class="swm-outcome" role="status" aria-live="polite"></p>
             </section>
@@ -89,6 +101,10 @@
                             <span>Sharing from TV apps</span>
                         </label>
                         <div class="fieldDescription">Everyone who may share gets a private playlist "Share with &lt;name&gt;" for each profile with limits; adding a film or an episode there shares it in any app, removing it stops sharing. Turning this off removes those playlists; shares stay.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <input is="emby-input" type="number" id="swm-tv-days" label="Days a share made from a TV app lasts" min="0" max="366" step="1" />
+                        <div class="fieldDescription">A TV app has no way to choose how long to share, so a title added to a "Share with" playlist is shared for this many days, then taken out of the playlist. 0 keeps it until it is removed. At most 366. Shares already made keep their own end date.</div>
                     </div>
                     <button is="emby-button" type="submit" class="raised button-submit"><span>Save</span></button>
                 </form>

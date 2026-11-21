@@ -26,7 +26,9 @@ public record UserRef(Guid Id, string Name);
 /// <param name="VisibleNow">Whether the server says the recipient can see the copy right now.</param>
 /// <param name="Pending">The copy is on disk but the server has not scanned it yet (a new share, first check).</param>
 /// <param name="NotFound">The copy should be on disk but the server has no item for it, past the first scan.</param>
-public record AuditShare(Guid Id, string Title, int? Year, string? OfficialRating, string SharerName, bool SharerExists, DateTime CreatedUtc, ShareState State, string? StateReason, bool VisibleNow, bool Pending, bool NotFound);
+/// <param name="ExpiresUtc">When the share ends by itself; null until it is removed.</param>
+/// <param name="Expired">The share's time is up but the check-shares run has not ended it yet (it does within seconds).</param>
+public record AuditShare(Guid Id, string Title, int? Year, string? OfficialRating, string SharerName, bool SharerExists, DateTime CreatedUtc, ShareState State, string? StateReason, bool VisibleNow, bool Pending, bool NotFound, DateTime? ExpiresUtc = null, bool Expired = false);
 
 /// <summary>One profile on the audit page.</summary>
 /// <param name="User">The profile.</param>
@@ -169,7 +171,8 @@ public sealed class Leftovers
 /// <param name="Year">Year, if known.</param>
 /// <param name="SharerName">Who shared it.</param>
 /// <param name="CreatedUtc">When.</param>
-public record ReceivedShare(Guid Id, string Title, int? Year, string SharerName, DateTime CreatedUtc);
+/// <param name="ExpiresUtc">When it ends by itself; null until it is removed.</param>
+public record ReceivedShare(Guid Id, string Title, int? Year, string SharerName, DateTime CreatedUtc, DateTime? ExpiresUtc = null);
 
 /// <summary>
 /// What the two pages show about shares, and the administrator's restore. Every method runs under the
@@ -321,7 +324,7 @@ public class AuditService
     /// <returns>Done when every step went through; otherwise the message lists what was left.</returns>
     public RestoreOutcome Uninstall() => _gate.Run(() => TeardownLocked(forced: true));
 
-    /// <summary>Active shares a user received whose copy the server says they can see now.</summary>
+    /// <summary>Active shares a user received whose copy the server says they can see now, leaving out any whose time is up.</summary>
     /// <param name="userId">The recipient.</param>
     /// <returns>The shares, newest first.</returns>
     public IReadOnlyList<ReceivedShare> Received(Guid userId) => _gate.Run<IReadOnlyList<ReceivedShare>>(() =>
@@ -332,10 +335,11 @@ public class AuditService
         }
 
         var libraries = _store.Libraries();
+        var now = _utcNow();
         return _store.All()
-            .Where(r => r.RecipientUserId == userId && r.State == ShareState.Active && CopyVisible(r, userId, libraries))
+            .Where(r => r.RecipientUserId == userId && r.State == ShareState.Active && !r.IsExpired(now) && CopyVisible(r, userId, libraries))
             .OrderByDescending(r => r.CreatedUtc)
-            .Select(r => new ReceivedShare(r.Id, r.Title, r.Year, _gateway.GetUser(r.SharerUserId)?.Name ?? r.SharerName, r.CreatedUtc))
+            .Select(r => new ReceivedShare(r.Id, r.Title, r.Year, _gateway.GetUser(r.SharerUserId)?.Name ?? r.SharerName, r.CreatedUtc, r.ExpiresUtc))
             .ToList();
     });
 
@@ -365,8 +369,10 @@ public class AuditService
         return RatingChooser.Choose(ratings, cap, u.CapSubScore) ?? $"age limit {cap}";
     }
 
-    private List<AuditShare> Rows(IEnumerable<ShareRecord> records, Guid recipientId, IReadOnlyDictionary<Guid, Dictionary<string, Guid>> libraries) =>
-        records
+    private List<AuditShare> Rows(IEnumerable<ShareRecord> records, Guid recipientId, IReadOnlyDictionary<Guid, Dictionary<string, Guid>> libraries)
+    {
+        var now = _utcNow();
+        return records
             .OrderByDescending(r => r.CreatedUtc)
             .Select(r =>
             {
@@ -384,9 +390,12 @@ public class AuditService
                     r.StateReason,
                     visible,
                     pending,
-                    notFound);
+                    notFound,
+                    r.ExpiresUtc,
+                    r.IsExpired(now));
             })
             .ToList();
+    }
 
     // The server's answer for the copy. A copy the server has no item for is "pending" only for a new share before its
     // first missed check; after that it is "not found". Anything unknown is "not visible".

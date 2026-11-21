@@ -305,7 +305,9 @@ public sealed class SyncWorker : IDisposable
 /// <summary>
 /// Subscribes to the server's in-process events for the plugin's lifetime: user updated (policy edits and renames, also
 /// raised by the plugin's own policy writes) queues isolation and playlists, and a full sync; a new library folder queues a full sync; a
-/// playlist added, changed or removed queues playlists. Handlers only queue.
+/// playlist added, changed or removed queues playlists. Handlers only queue. A timer asks the <see cref="ExpiryWatch"/> every
+/// <see cref="ExpiryWatch.Interval"/> and queues a full sync when a share's time has come up, so an expired share ends
+/// within seconds rather than at the next scan.
 /// </summary>
 public sealed class SyncHost : IHostedService
 {
@@ -315,7 +317,9 @@ public sealed class SyncHost : IHostedService
     private readonly ShareSynchronizer _sync;
     private readonly PluginGate _gate;
     private readonly AuditService _audit;
+    private readonly ExpiryWatch _expiry;
     private readonly ILogger<SyncHost> _logger;
+    private Timer? _expiryTimer;
 
     /// <summary>Initializes a new instance of the <see cref="SyncHost"/> class.</summary>
     /// <param name="worker">The sync queue.</param>
@@ -324,9 +328,11 @@ public sealed class SyncHost : IHostedService
     /// <param name="sync">The synchronizer (in-charge check for the share-root guard).</param>
     /// <param name="gate">The process-wide serialiser.</param>
     /// <param name="audit">Runs the forced teardown when the plugin is uninstalled.</param>
+    /// <param name="expiry">Says when a share's time has come up.</param>
     /// <param name="logger">Logger.</param>
-    public SyncHost(SyncWorker worker, IUserManager users, ILibraryManager libraries, ShareSynchronizer sync, PluginGate gate, AuditService audit, ILogger<SyncHost> logger)
+    public SyncHost(SyncWorker worker, IUserManager users, ILibraryManager libraries, ShareSynchronizer sync, PluginGate gate, AuditService audit, ExpiryWatch expiry, ILogger<SyncHost> logger)
     {
+        _expiry = expiry;
         _audit = audit;
         _worker = worker;
         _users = users;
@@ -361,6 +367,7 @@ public sealed class SyncHost : IHostedService
         _libraries.ItemAdded += OnItemAdded;
         _libraries.ItemUpdated += OnItemChanged;
         _libraries.ItemRemoved += OnItemChanged;
+        _expiryTimer = new Timer(_ => OnExpiryTick(), null, ExpiryWatch.Interval, ExpiryWatch.Interval);
         _logger.LogInformation("Shared With Me: listening for user and library changes");
         return Task.CompletedTask;
     }
@@ -376,12 +383,23 @@ public sealed class SyncHost : IHostedService
         return Task.CompletedTask;
     }
 
+    // The timer goes with the events: after it nothing queues work any more.
     private void Unsubscribe()
     {
+        Interlocked.Exchange(ref _expiryTimer, null)?.Dispose();
         _users.OnUserUpdated -= OnUserUpdated;
         _libraries.ItemAdded -= OnItemAdded;
         _libraries.ItemUpdated -= OnItemChanged;
         _libraries.ItemRemoved -= OnItemChanged;
+    }
+
+    private void OnExpiryTick()
+    {
+        if (_expiry.Due())
+        {
+            _logger.LogInformation("Shared With Me: a share's time is up, queueing a sync");
+            _ = _worker.Request(SyncWork.Full);
+        }
     }
 
     private void OnUserUpdated(object? sender, GenericEventArgs<User> e)

@@ -115,6 +115,7 @@ How they were found: XML docs of the server DLLs (`/jellyfin/*.xml` in `jf-share
 - `GET`/`POST /Plugins/4069397e-cf0d-460a-9a00-e5175c137516/Configuration` (admin) reads and writes `{ShareRoot, WhoMayShare}`. WhoMayShare is a string enum.
 - `reset.py` puts both back to their defaults.
 - 0.2 adds `WhoMayShare: "SelectedProfiles"` and `AllowedSharers` (an array of user ids), see "Version 0.2, A" below.
+- 0.2 adds `TvShareDays` (an integer, 0 to 366, default 0), see "Version 0.2, B" below.
 
 ### Refusal messages
 - An item that does not exist and an item the sharer cannot see get one identical body: `{"Refusal":"NotVisibleToSharer","Message":"You can't share that title."}`. Proved for Spike Fifteen as kid1 and for random GUIDs.
@@ -676,3 +677,31 @@ What the uninstall does (`AuditService.Uninstall`, one forced run of the same te
 - The audit page lists the tick boxes from `ApiClient.getUsers()` (enabled, not administrator) and writes exactly the
   ticked ones on every save, whichever value is picked: the list is kept while another value is in force, and an id of a
   profile not shown (disabled, or now an administrator) is dropped at the next save.
+
+## Version 0.2, B: expiring shares
+
+- `POST /SharedWithMe/Shares` takes an optional `ExpiresUtc` (ISO 8601). ASP.NET binds `"...Z"` as UTC, an offset as local
+  time (converted back to UTC by the plugin) and a timestamp without zone as unspecified (taken as UTC); a value that is not
+  a timestamp is refused by the model binder with `400` before the plugin sees it. Every share record in
+  `GET /SharedWithMe/Shares`, `/Received` and `/Audit` carries `ExpiresUtc` (UTC, `...Z`) or `null`.
+- A past end time and one more than 366 days ahead each answer `409 {"Refusal": "InvalidExpiry", "Message": ...}` and
+  change nothing (no record); 365 days ahead was accepted (`test_expiring_shares.py`).
+- The test takes "now" from the server's HTTP `Date` header, not the test machine's clock.
+- What was observed on the spike (`test_expiring_shares.py`, adult shares Spike Eighteen with kid1 until 45 s ahead):
+  kid1 saw the copy and adult's "Share with kid1" playlist listed the mirrored title before the end time; with no sync
+  asked for, the server log showed `a share's time is up, queueing a sync` and the share `Closed (expired)` about 1 s
+  later, and the test saw it Closed about 5 s after the end time. Then kid1's copy answered 404, kid1's movie list held no
+  copy, the `Shared with kid1` library was gone, the playlist no longer listed the title and `/Received` was empty. Two
+  more full runs left it Closed and created nothing. A share with no end time (Spike Fifteen to kid2) was untouched.
+- `TvShareDays`: a save of 1000 reads back 366, of -4 reads back 0 (the setting clamps itself, so the XML file is held too).
+  With 1, Spike Eighteen added to newbie's "Share with kid2" playlist became a share ending 1 day (within 2 min) after it
+  was added; a web share made meanwhile (Spike Show, adult to kid2) had `ExpiresUtc: null`, also after being mirrored into
+  adult's playlist.
+- Control: the same test against the feature-A build (HEAD before this change) failed at "timed out waiting for the
+  expired share to close": that build ignores `ExpiresUtc` and the share stayed Active.
+- Browser (Chrome via Playwright): the share page's "Keep it" offers Until I remove it / 1 day / 1 week / Until a date; the
+  date field appears only for the last, limited to today..+365 days; an empty date is refused on the page; a date share was
+  sent as the end of that day (browser in UTC: `Nov 23, 12:00 AM` for 22 Nov). "You shared" and "Shared with you" show an
+  Until column; an expired share stays in "You shared" as "expired" with no Undo. The audit page shows Until per share,
+  "Closed: expired" afterwards, "Keep it" under Add title, and the TV days setting, which saved and read back. No page
+  errors.

@@ -1631,6 +1631,144 @@ public sealed class ShareSynchronizerTests : IDisposable
         Assert.Single(sync.FindCopyEpisodes(Stored(r.Id))); // E01 is no longer part of the share, even before a rebuild
     }
 
+    // ---- Version 0.2, B: expiring shares ----
+
+    // A share that ends at the given time, made as usual (the share service's own clock is the real one) and then dated.
+    private ShareRecord ShareUntil(Guid film, Guid recipient, DateTime expires)
+    {
+        var r = Share(film, recipient) with { ExpiresUtc = expires };
+        _store.Upsert(r);
+        return r;
+    }
+
+    [Fact]
+    public void An_expired_movie_share_closes_as_expired_and_its_copy_and_library_go()
+    {
+        var r = ShareUntil(_film, _kid1, _now.AddHours(1));
+        var lib = Library(_kid1);
+        var folder = Folder(r);
+        _now = _now.AddHours(2);
+
+        var report = Sut().Run();
+
+        var after = Stored(r.Id);
+        Assert.Equal(ShareState.Closed, after.State);
+        Assert.Equal(ShareSynchronizer.ExpiredReason, after.StateReason);
+        Assert.Equal("expired", ShareSynchronizer.ExpiredReason);
+        Assert.Equal(string.Empty, after.FolderName);
+        Assert.Equal(_now, after.ClosedUtc);
+        Assert.Equal(r.ExpiresUtc, after.ExpiresUtc);
+        Assert.False(Directory.Exists(folder));
+        Assert.Contains(lib, _gw.RemovedLibraries);
+        Assert.False(_store.Libraries().ContainsKey(_kid1));
+        Assert.Equal(1, report.Closed);
+    }
+
+    [Fact]
+    public void An_expired_series_share_closes_as_expired_and_its_copy_and_library_go()
+    {
+        AddShow(1, 2);
+        var r = ShareShow() with { ExpiresUtc = _now.AddMinutes(5) };
+        _store.Upsert(r);
+        var lib = _store.Libraries()[_kid1][nameof(ShareKind.Series)];
+        var folder = Path.Combine(ShowsRoot(_kid1), r.FolderName);
+        Assert.True(Directory.Exists(folder));
+        _now = _now.AddMinutes(6);
+
+        Assert.Equal(1, Sut().Run().Closed);
+
+        Assert.Equal((ShareState.Closed, ShareSynchronizer.ExpiredReason, string.Empty), (Stored(r.Id).State, Stored(r.Id).StateReason, Stored(r.Id).FolderName));
+        Assert.False(Directory.Exists(folder));
+        Assert.Contains(lib, _gw.RemovedLibraries);
+    }
+
+    [Fact]
+    public void A_share_without_an_end_time_is_never_touched_by_expiry()
+    {
+        var r = Share(_film, _kid1);
+        var other = ShareUntil(_film2, _kid1, _now.AddDays(1));
+        _now = _now.AddDays(400);
+
+        Sut().Run();
+
+        Assert.Equal(ShareState.Active, Stored(r.Id).State);
+        Assert.Null(Stored(r.Id).ExpiresUtc);
+        Assert.True(Directory.Exists(Folder(r)));
+        Assert.Equal(ShareState.Closed, Stored(other.Id).State);
+    }
+
+    [Fact]
+    public void A_share_ends_exactly_at_its_end_time_and_not_a_tick_before()
+    {
+        var r = ShareUntil(_film, _kid1, _now.AddMinutes(10));
+        _now = r.ExpiresUtc!.Value.AddTicks(-1);
+
+        Sut().Run();
+        Assert.Equal(ShareState.Active, Stored(r.Id).State);
+        Assert.False(Stored(r.Id).IsExpired(_now));
+
+        _now = r.ExpiresUtc.Value;
+        Assert.True(Stored(r.Id).IsExpired(_now));
+        Sut().Run();
+        Assert.Equal((ShareState.Closed, ShareSynchronizer.ExpiredReason), (Stored(r.Id).State, Stored(r.Id).StateReason));
+    }
+
+    [Fact]
+    public void A_share_closed_by_expiry_is_not_revived_by_later_runs()
+    {
+        var r = ShareUntil(_film, _kid1, _now.AddMinutes(1));
+        _now = _now.AddMinutes(2);
+        Sut().Run();
+        var closed = Stored(r.Id);
+
+        // Everything that would rebuild an Active share: the original still there and the recipient still unable to see it.
+        _gw.ScanQueue.Clear();
+        for (var i = 0; i < 3; i++)
+        {
+            _now = _now.AddMinutes(1);
+            var report = Sut().Run();
+            Assert.Equal((0, 0, 0), (report.Closed, report.Reapplied, report.Relinked));
+        }
+
+        Assert.Equal(closed, Stored(r.Id) with { ProviderIds = closed.ProviderIds });
+        Assert.False(Directory.Exists(Path.Combine(MoviesRoot(_kid1), r.FolderName)));
+        Assert.Empty(_gw.ScanQueue);
+        Assert.Single(_store.All());
+    }
+
+    [Fact]
+    public void An_expired_copy_that_cannot_be_removed_is_retried_and_ends_closed_as_expired()
+    {
+        var r = ShareUntil(_film, _kid1, _now.AddMinutes(1));
+        _now = _now.AddMinutes(2);
+        _builder.FailRemove = true;
+
+        Sut().Run();
+        Assert.Equal((ShareState.Broken, ShareService.CouldNotRemoveReason), (Stored(r.Id).State, Stored(r.Id).StateReason));
+        Assert.True(Directory.Exists(Folder(r)));
+
+        _builder.FailRemove = false;
+        Sut().Run();
+
+        // Not deleted as a removed share would be: the record stays to say it expired.
+        Assert.Equal((ShareState.Closed, ShareSynchronizer.ExpiredReason), (Stored(r.Id).State, Stored(r.Id).StateReason));
+        Assert.False(Directory.Exists(Folder(r)));
+    }
+
+    [Fact]
+    public void A_broken_share_that_expires_is_closed_as_expired()
+    {
+        var r = ShareUntil(_film, _kid1, _now.AddMinutes(1));
+        _gw.Items.Remove(_film);
+        Sut().Run();
+        Assert.Equal((ShareState.Broken, ShareSynchronizer.OriginalMissingReason), (Stored(r.Id).State, Stored(r.Id).StateReason));
+
+        _now = _now.AddMinutes(2);
+        Sut().Run();
+
+        Assert.Equal((ShareState.Closed, ShareSynchronizer.ExpiredReason), (Stored(r.Id).State, Stored(r.Id).StateReason));
+    }
+
     private sealed class TestBuilder : ShareFolderBuilder
     {
         public bool FailRemove { get; set; }

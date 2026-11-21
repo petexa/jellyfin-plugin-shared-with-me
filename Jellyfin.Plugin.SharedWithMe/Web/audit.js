@@ -65,7 +65,26 @@ function day(utc) {
 }
 
 function stateText(share) {
+    if (share.Expired) {
+        return 'expired (ending now)';
+    }
+
     return share.StateReason ? share.State + ': ' + share.StateReason : share.State;
+}
+
+// When a share ends: a date and a time, or "until removed".
+function until(utc) {
+    if (!utc) {
+        return 'until removed';
+    }
+
+    const d = new Date(utc);
+    return isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function localDay(date) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
 }
 
 function visibleText(share) {
@@ -105,7 +124,7 @@ export default function (view) {
 
             const table = el('table');
             const head = el('tr');
-            for (const h of ['Title', 'True rating', 'Shared by', 'Date', 'State', 'Visible now', '']) {
+            for (const h of ['Title', 'True rating', 'Shared by', 'Date', 'Until', 'State', 'Visible now', '']) {
                 const th = el('th', h);
                 th.scope = 'col';
                 head.appendChild(th);
@@ -119,6 +138,7 @@ export default function (view) {
                 row.appendChild(el('td', share.OfficialRating || 'unknown'));
                 row.appendChild(el('td', share.SharerExists ? share.SharerName : share.SharerName + ' (deleted)'));
                 row.appendChild(el('td', day(share.CreatedUtc)));
+                row.appendChild(el('td', until(share.ExpiresUtc)));
                 row.appendChild(el('td', stateText(share)));
                 row.appendChild(el('td', visibleText(share)));
                 const cell = el('td');
@@ -280,6 +300,7 @@ export default function (view) {
             $('swm-who').value = config.WhoMayShare || 'Everyone';
             $('swm-root').value = config.ShareRoot || '';
             $('swm-tv').checked = config.TvSharingPlaylists !== false;
+            $('swm-tv-days').value = String(config.TvShareDays || 0);
             await renderSharers(config.AllowedSharers || []);
             showSharers();
         } catch (e) {
@@ -356,18 +377,55 @@ export default function (view) {
             return;
         }
 
+        const keep = keepUntil();
+        if (!keep.ok) {
+            say(status, keep.message);
+            return;
+        }
+
         const who = select.options[select.selectedIndex].textContent;
         const title = titleWithYear(picked.Title, picked.Year);
         say(status, 'Sharing...');
         const button = $('swm-add-share');
         button.disabled = true;
-        const res = await api('POST', 'SharedWithMe/Shares', { ItemId: picked.Id, RecipientUserId: select.value });
+        const res = await api('POST', 'SharedWithMe/Shares', { ItemId: picked.Id, RecipientUserId: select.value, ExpiresUtc: keep.value });
         button.disabled = false;
         if (res.ok) {
             await load();
         }
 
-        say(status, res.ok ? 'Shared "' + title + '" with ' + who + '.' : failure(res));
+        say(status, res.ok
+            ? 'Shared "' + title + '" with ' + who + (res.data && res.data.ExpiresUtc ? ' until ' + until(res.data.ExpiresUtc) : '') + '.'
+            : failure(res));
+    }
+
+    // The "Keep it" choice as the end time to send (UTC), null for "until I remove it". A date means the end of that day
+    // in this browser's time zone. The server refuses a time that has passed or is more than 366 days ahead.
+    function keepUntil() {
+        const keep = $('swm-add-keep').value;
+        if (keep === 'day' || keep === 'week') {
+            return { ok: true, value: new Date(Date.now() + (keep === 'day' ? 1 : 7) * 86400000).toISOString() };
+        }
+
+        if (keep !== 'date') {
+            return { ok: true, value: null };
+        }
+
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec($('swm-add-until').value);
+        if (!m) {
+            return { ok: false, message: 'Choose the last day of the share first.' };
+        }
+
+        const end = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1);
+        if (end.getTime() <= Date.now()) {
+            return { ok: false, message: 'That day has already passed. Choose today or a later day.' };
+        }
+
+        return { ok: true, value: end.toISOString() };
+    }
+
+    function showKeep() {
+        $('swm-add-until-area').classList.toggle('hide', $('swm-add-keep').value !== 'date');
     }
 
     async function checkNow() {
@@ -401,6 +459,9 @@ export default function (view) {
             config.WhoMayShare = $('swm-who').value;
             config.AllowedSharers = tickedSharers().map((i) => i.value);
             config.TvSharingPlaylists = $('swm-tv').checked;
+            // The server holds it to 0..366 as well.
+            const days = parseInt($('swm-tv-days').value, 10);
+            config.TvShareDays = isNaN(days) ? 0 : Math.min(366, Math.max(0, days));
             if (!$('swm-root').disabled) {
                 config.ShareRoot = $('swm-root').value.trim();
             }
@@ -412,7 +473,9 @@ export default function (view) {
             const sharers = $('swm-who').value === 'SelectedProfiles'
                 ? ' Profiles that may share besides administrators: ' + (tickedSharers().map((i) => i.dataset.name).join(', ') || 'none') + '.'
                 : '';
-            say(status, 'Settings saved.' + sharers + ' Sharing from TV apps: ' + ($('swm-tv').checked ? 'on' : 'off') + '.' + (audit && audit.SetupProblem ? ' There is still a setup problem, shown at the top of the page.' : ''));
+            const tvDays = Number($('swm-tv-days').value) || 0;
+            say(status, 'Settings saved.' + sharers + ' Sharing from TV apps: ' + ($('swm-tv').checked ? 'on' : 'off') + '.'
+                + ' Shares made from a TV app last ' + (tvDays ? tvDays + (tvDays === 1 ? ' day' : ' days') : 'until removed') + '.' + (audit && audit.SetupProblem ? ' There is still a setup problem, shown at the top of the page.' : ''));
         } catch (err) {
             say(status, 'Settings were not saved. ' + (err && err.status ? 'The server answered ' + err.status + '.' : ''));
         } finally {
@@ -484,9 +547,12 @@ export default function (view) {
     $('swm-check').addEventListener('click', checkNow);
     $('swm-settings-form').addEventListener('submit', saveSettings);
     $('swm-who').addEventListener('change', showSharers);
+    $('swm-add-keep').addEventListener('change', showKeep);
     $('swm-restore').addEventListener('click', restore);
 
     view.addEventListener('viewshow', () => {
+        $('swm-add-until').min = localDay(new Date());
+        $('swm-add-until').max = localDay(new Date(Date.now() + 365 * 86400000));
         showShareLink();
         load();
         loadRecipients();

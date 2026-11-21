@@ -20,7 +20,8 @@ public sealed class SharePlaylistManagerTests : IDisposable
     private readonly string _media;
     private readonly string _shareRoot;
     private readonly PluginGate _gate = new();
-    private readonly DateTime _now = new(2026, 11, 19, 12, 0, 0, DateTimeKind.Utc);
+    private DateTime _now = new(2026, 11, 19, 12, 0, 0, DateTimeKind.Utc);
+    private int _tvDays;
     private bool _enabled = true;
     private string? _setupProblem;
     private WhoMayShare _who = WhoMayShare.Everyone;
@@ -69,10 +70,13 @@ public sealed class SharePlaylistManagerTests : IDisposable
     private ShareEligibility Eligibility() => new(_gw, _store, () => _who, () => _allowed);
 
     private ShareService Service() =>
-        new(_gw, _store, Eligibility(), new LibraryAccessManager(_gw, _store), new ShareFolderBuilder(), () => _shareRoot, _gate, NullLogger.Instance);
+        new(_gw, _store, Eligibility(), new LibraryAccessManager(_gw, _store), new ShareFolderBuilder(), () => _shareRoot, _gate, NullLogger.Instance, null, () => _now);
 
     private SharePlaylistManager Sut() =>
-        new(_gw, _store, Service(), Eligibility(), new LibraryAccessManager(_gw, _store), () => _enabled, () => _setupProblem, _gate, NullLogger.Instance, () => _now);
+        new(_gw, _store, Service(), Eligibility(), new LibraryAccessManager(_gw, _store), () => _enabled, () => _setupProblem, _gate, NullLogger.Instance, () => _now, () => _tvDays);
+
+    private ShareSynchronizer Sync() =>
+        new(_gw, _store, new LibraryAccessManager(_gw, _store), new ShareFolderBuilder(), () => _shareRoot, _gate, NullLogger.Instance, () => _now);
 
     private static string Tag(Guid id) => LibraryAccessManager.RecipientTag(id);
 
@@ -1241,5 +1245,110 @@ public sealed class SharePlaylistManagerTests : IDisposable
 
         Assert.Equal("18", SharePlaylistManager.OwnerRatingFor(_gw.GetRatings(), _gw.Users[_kid1]));
         Assert.Null(SharePlaylistManager.OwnerRatingFor(_gw.GetRatings(), null));
+    }
+
+    // ---- Version 0.2, B: expiring shares ----
+
+    [Fact]
+    public void A_share_made_from_a_playlist_lasts_TvShareDays_and_none_lasts_until_removed()
+    {
+        _tvDays = 1;
+        Sut().EnsurePlaylists();
+        Add(_adult, _kid1, _e18);
+        Sut().Reconcile();
+        Assert.Equal(_now.AddDays(1), Assert.Single(Active(_adult, _kid1)).ExpiresUtc);
+
+        _tvDays = 0;
+        Add(_adult, _kid2, _f15);
+        Sut().Reconcile();
+        Assert.Null(Assert.Single(Active(_adult, _kid2)).ExpiresUtc);
+    }
+
+    [Fact]
+    public void TvShareDays_beyond_366_is_held_to_366()
+    {
+        _tvDays = 1000;
+        Sut().EnsurePlaylists();
+        Add(_adult, _kid1, _e18);
+
+        Sut().Reconcile();
+
+        Assert.Equal(_now.AddDays(366), Assert.Single(Active(_adult, _kid1)).ExpiresUtc);
+    }
+
+    [Fact]
+    public void The_TV_end_date_is_not_given_to_a_web_share_mirrored_into_the_playlist()
+    {
+        _tvDays = 7;
+        Sut().EnsurePlaylists();
+        var web = WebShare(_adult, _e18, _kid1);
+
+        Sut().Reconcile();
+
+        var mirrored = Assert.Single(Active(_adult, _kid1));
+        Assert.Equal(web.Id, mirrored.Id);
+        Assert.True(mirrored.ViaPlaylist);
+        Assert.Null(mirrored.ExpiresUtc);
+        Assert.Equal(new[] { _e18 }, Entries(_adult, _kid1));
+    }
+
+    [Fact]
+    public void An_expired_playlist_share_leaves_the_playlist_and_is_not_shared_again()
+    {
+        _tvDays = 1;
+        Sut().EnsurePlaylists();
+        Add(_adult, _kid1, _e18);
+        Add(_adult, _kid1, _ep1); // a series, by one of its episodes
+        Sut().Reconcile();
+        Assert.Equal(2, Active(_adult, _kid1).Count);
+
+        _now = _now.AddDays(1);
+        Sync().Run();
+        Sut().Reconcile();
+
+        Assert.Empty(Entries(_adult, _kid1));
+        Assert.Empty(Active(_adult, _kid1));
+        Assert.Equal(2, _store.All().Count);
+        Assert.All(_store.All(), r => Assert.Equal((ShareState.Closed, ShareSynchronizer.ExpiredReason, false), (r.State, r.StateReason, r.ViaPlaylist)));
+        Assert.Empty(_store.RefusalNotes()); // ended as a removal does: nothing to tell
+
+        Sut().Reconcile();
+        Sync().Run();
+        Sut().Reconcile();
+        Assert.Empty(Active(_adult, _kid1));
+        Assert.Equal(2, _store.All().Count);
+
+        Add(_adult, _kid1, _e18); // put back by its owner: a fresh share, with a fresh end date
+        Sut().Reconcile();
+        Assert.Equal(_now.AddDays(1), Assert.Single(Active(_adult, _kid1)).ExpiresUtc);
+    }
+
+    [Fact]
+    public void An_expired_share_whose_entry_the_server_keeps_is_never_shared_again()
+    {
+        _tvDays = 1;
+        Sut().EnsurePlaylists();
+        Add(_adult, _kid1, _e18);
+        Sut().Reconcile();
+        var share = Assert.Single(Active(_adult, _kid1));
+        _gw.IgnoreRemoveFromPlaylist = true;
+
+        _now = _now.AddDays(2);
+        for (var i = 0; i < 3; i++)
+        {
+            Sync().Run();
+            Sut().Run(full: true);
+        }
+
+        Assert.Empty(Active(_adult, _kid1));
+        var kept = Assert.Single(_store.All());
+        Assert.Equal((share.Id, ShareState.Closed, ShareSynchronizer.ExpiredReason, true), (kept.Id, kept.State, kept.StateReason, kept.ViaPlaylist));
+        Assert.Equal(new[] { _e18 }, Entries(_adult, _kid1));
+
+        _gw.IgnoreRemoveFromPlaylist = false; // the server lets go of it: the record lets go of the playlist
+        Sut().Reconcile();
+        Assert.Empty(Entries(_adult, _kid1));
+        Assert.False(Assert.Single(_store.All()).ViaPlaylist);
+        Assert.Empty(Active(_adult, _kid1));
     }
 }

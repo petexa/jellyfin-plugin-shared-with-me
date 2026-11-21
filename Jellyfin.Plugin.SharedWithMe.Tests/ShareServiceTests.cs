@@ -55,13 +55,14 @@ public sealed class ShareServiceTests : IDisposable
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
     private Action<string>? _probe;
+    private Func<DateTime>? _clock;
 
     private ShareService Sut()
     {
         _gw.ShareRoot = _shareRoot;
         var eligibility = new ShareEligibility(_gw, _store, () => _who, () => _allowed);
         var access = new LibraryAccessManager(_gw, _store);
-        return new ShareService(_gw, _store, eligibility, access, _builder, () => _shareRoot, _gate, NullLogger.Instance, _probe);
+        return new ShareService(_gw, _store, eligibility, access, _builder, () => _shareRoot, _gate, NullLogger.Instance, _probe, _clock);
     }
 
     private void AddUser(Guid id, string name, int? cap, int? sub = null, bool admin = false, bool disabled = false, bool hidden = false) =>
@@ -601,6 +602,88 @@ public sealed class ShareServiceTests : IDisposable
         Assert.Empty(_gw.LibraryAccessCalls);
         Assert.Empty(_gw.CreatedLibraries);
         Assert.Empty(_store.All());
+    }
+
+    // ---- Version 0.2, B: expiring shares ----
+
+    [Fact]
+    public void Create_with_an_end_time_stores_it_as_utc()
+    {
+        var now = new DateTime(2026, 11, 21, 10, 0, 0, DateTimeKind.Utc);
+        _clock = () => now;
+
+        var (decision, record) = Sut().Create(_adult, _film, _kid1, now.AddSeconds(5));
+
+        Assert.Equal(Refusal.None, decision.Refusal);
+        Assert.Equal(now.AddSeconds(5), record!.ExpiresUtc);
+        Assert.Equal(DateTimeKind.Utc, record.ExpiresUtc!.Value.Kind);
+        Assert.Equal(now, record.CreatedUtc);
+        var stored = Assert.Single(_store.All());
+        Assert.Equal(now.AddSeconds(5), stored.ExpiresUtc);
+        Assert.Equal(DateTimeKind.Utc, stored.ExpiresUtc!.Value.Kind);
+
+        // An end time with no zone is taken as UTC.
+        var (_, second) = Sut().Create(_adult, _film2, _kid1, DateTime.SpecifyKind(now.AddDays(1), DateTimeKind.Unspecified));
+        Assert.Equal(now.AddDays(1), second!.ExpiresUtc);
+        Assert.Equal(DateTimeKind.Utc, second.ExpiresUtc!.Value.Kind);
+    }
+
+    [Fact]
+    public void Create_without_an_end_time_keeps_the_share_until_removed()
+    {
+        var (_, record) = Sut().Create(_adult, _film, _kid1);
+
+        Assert.Null(record!.ExpiresUtc);
+        Assert.Null(Assert.Single(_store.All()).ExpiresUtc);
+    }
+
+    [Theory]
+    [InlineData(-60)]
+    [InlineData(0)] // exactly now would never be live
+    public void Create_refuses_an_end_time_that_has_passed_and_changes_nothing(int seconds)
+    {
+        var now = new DateTime(2026, 11, 21, 10, 0, 0, DateTimeKind.Utc);
+        _clock = () => now;
+
+        var (decision, record) = Sut().Create(_adult, _film, _kid1, now.AddSeconds(seconds));
+
+        Assert.Null(record);
+        Assert.Equal(Refusal.InvalidExpiry, decision.Refusal);
+        Assert.Equal(ShareService.ExpiryPastMessage, decision.Message);
+        Assert.Empty(_store.All());
+        Assert.Empty(_gw.CreatedLibraries);
+        Assert.Empty(Visible(_kid1));
+        Assert.Empty(_gw.LibraryAccessCalls);
+    }
+
+    [Fact]
+    public void Create_refuses_an_end_time_more_than_366_days_ahead_and_allows_366()
+    {
+        var now = new DateTime(2026, 11, 21, 10, 0, 0, DateTimeKind.Utc);
+        _clock = () => now;
+
+        var (decision, record) = Sut().Create(_adult, _film, _kid1, now.AddDays(366).AddSeconds(1));
+        Assert.Null(record);
+        Assert.Equal(Refusal.InvalidExpiry, decision.Refusal);
+        Assert.Equal(ShareService.ExpiryTooFarMessage, decision.Message);
+        Assert.Empty(_store.All());
+
+        var (ok, made) = Sut().Create(_adult, _film, _kid1, now.AddDays(366));
+        Assert.Equal(Refusal.None, ok.Refusal);
+        Assert.Equal(now.AddDays(366), made!.ExpiresUtc);
+    }
+
+    [Fact]
+    public void A_closed_expired_share_does_not_stop_the_title_being_shared_again()
+    {
+        var (_, first) = Sut().Create(_adult, _film, _kid1);
+        _store.Upsert(Assert.Single(_store.All()) with { State = ShareState.Closed, StateReason = ShareSynchronizer.ExpiredReason, FolderName = string.Empty });
+        _builder.Remove(MoviesRoot(_kid1), first!.FolderName);
+
+        var (decision, again) = Sut().Create(_adult, _film, _kid1);
+
+        Assert.Equal(Refusal.None, decision.Refusal);
+        Assert.NotEqual(first.Id, again!.Id);
     }
 
     private sealed class TestBuilder : ShareFolderBuilder

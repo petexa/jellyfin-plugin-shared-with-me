@@ -47,6 +47,9 @@ public class ShareSynchronizer
     /// <summary>Reason for a share closed because the plugin is no longer in charge (for example after a restore).</summary>
     public const string SwitchedOffReason = "sharing was switched off";
 
+    /// <summary>Reason for a share closed because the time it was shared for is up.</summary>
+    public const string ExpiredReason = "expired";
+
     /// <summary>Reason for a share whose check threw.</summary>
     public const string CheckFailedReason = "check failed";
 
@@ -510,6 +513,15 @@ public class ShareSynchronizer
         }
 
         c.Checked++;
+
+        // Expiry, before every other rule (and before 5b, so a copy that could not be removed at expiry is retried here
+        // and the record ends Closed "expired" rather than being deleted): the share ends exactly as a removal does. A
+        // Closed record is never looked at again, so nothing in this run or a later one rebuilds it.
+        if (r.IsExpired(_utcNow()))
+        {
+            Retire(r, ShareState.Closed, ExpiredReason, kindRoot, c);
+            return;
+        }
 
         // Decision 5b: a copy that could not be removed is retried, never rebuilt.
         if (r.State == ShareState.Broken && r.StateReason == ShareService.CouldNotRemoveReason)

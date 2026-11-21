@@ -236,13 +236,15 @@ public sealed class ShareStoreTests : IDisposable
     }
 
     // One record in each shape a version of the plugin wrote: 19d3036 (Task 2), 5696761 (Task 7: checks, ClosedUtc),
-    // 030e6b0 (Task 9: EmptyChecks), 1332f29 (Task 11: ViaPlaylist), Task 10 (DanglingRuns).
+    // 030e6b0 (Task 9: EmptyChecks), 1332f29 (Task 11: ViaPlaylist), Task 10 (DanglingRuns), final review (CountedUtc).
+    // None of them has ExpiresUtc (0.2, B): each loads as a share kept until it is removed.
     [Theory]
     [InlineData("")]
     [InlineData(",\"FailedChecks\":2,\"MissingChecks\":1,\"ClosedUtc\":\"2026-11-20T00:00:00Z\"")]
     [InlineData(",\"FailedChecks\":2,\"MissingChecks\":1,\"ClosedUtc\":null,\"EmptyChecks\":1")]
     [InlineData(",\"FailedChecks\":0,\"MissingChecks\":0,\"ClosedUtc\":null,\"EmptyChecks\":0,\"ViaPlaylist\":true")]
     [InlineData(",\"FailedChecks\":0,\"MissingChecks\":0,\"ClosedUtc\":null,\"EmptyChecks\":0,\"ViaPlaylist\":true,\"DanglingRuns\":2")]
+    [InlineData(",\"FailedChecks\":0,\"MissingChecks\":0,\"ClosedUtc\":null,\"EmptyChecks\":0,\"ViaPlaylist\":true,\"DanglingRuns\":2,\"CountedUtc\":\"2026-11-20T00:00:00Z\"")]
     public void A_record_in_every_previous_shape_still_loads(string tail)
     {
         var record = "{\"Id\":\"6f1c0f5e-7c43-4a59-9d0c-1d5c9f0b1a01\",\"OriginalItemId\":\"0b9a2c7e-1f6d-4c1a-8a51-2b8e1d7c6f02\","
@@ -261,7 +263,88 @@ public sealed class ShareStoreTests : IDisposable
         Assert.Equal(tail.Contains("EmptyChecks\":1", StringComparison.Ordinal) ? 1 : 0, r.EmptyChecks);
         Assert.Equal(tail.Contains("ViaPlaylist", StringComparison.Ordinal), r.ViaPlaylist);
         Assert.Equal(tail.Contains("DanglingRuns", StringComparison.Ordinal) ? 2 : 0, r.DanglingRuns);
+        Assert.Null(r.ExpiresUtc);
+        Assert.False(r.IsExpired(DateTime.MaxValue));
     }
+
+    // 0.2, B. The end time as written, and every way a file can hold it.
+    [Theory]
+    [InlineData(",\"ExpiresUtc\":null", null)]
+    [InlineData(",\"ExpiresUtc\":\"2026-11-22T08:30:00Z\"", "2026-11-22T08:30:00Z")]
+    [InlineData(",\"ExpiresUtc\":\"2026-11-22T08:30:00\"", "2026-11-22T08:30:00Z")] // no zone: UTC
+    [InlineData(",\"ExpiresUtc\":\"2026-11-22T09:30:00+01:00\"", "2026-11-22T08:30:00Z")] // an offset: converted
+    public void An_end_time_loads_as_utc(string tail, string? expected)
+    {
+        File.WriteAllText(FilePath, "{\"Shares\":[" + RecordJson(tail) + "],\"Snapshots\":[],\"Libraries\":{}}");
+
+        var r = Assert.Single(new ShareStore(_dir).All());
+
+        if (expected is null)
+        {
+            Assert.Null(r.ExpiresUtc);
+        }
+        else
+        {
+            Assert.Equal(DateTime.Parse(expected, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal), r.ExpiresUtc);
+            Assert.Equal(DateTimeKind.Utc, r.ExpiresUtc!.Value.Kind);
+        }
+    }
+
+    // "A record whose expiry cannot be read is treated as not expired only if it was never set": a value that is there but
+    // is not a time ends the share, and the rest of the file still loads.
+    [Theory]
+    [InlineData(",\"ExpiresUtc\":\"next Tuesday\"")]
+    [InlineData(",\"ExpiresUtc\":1732000000")]
+    [InlineData(",\"ExpiresUtc\":true")]
+    [InlineData(",\"ExpiresUtc\":{\"at\":\"2026-11-22\"}")]
+    [InlineData(",\"ExpiresUtc\":[]")]
+    public void An_end_time_that_cannot_be_read_ends_the_share(string tail)
+    {
+        File.WriteAllText(FilePath, "{\"Shares\":[" + RecordJson(tail) + "," + RecordJson(string.Empty, "7a2d0f5e-7c43-4a59-9d0c-1d5c9f0b1a02") + "],\"Snapshots\":[],\"Libraries\":{}}");
+
+        var store = new ShareStore(_dir);
+        Assert.True(store.IsReadable(out _));
+        var all = store.All();
+
+        Assert.Equal(2, all.Count);
+        Assert.Equal(DateTime.MinValue, all[0].ExpiresUtc);
+        Assert.True(all[0].IsExpired(new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        Assert.Equal("Heat", all[0].Title);
+        Assert.Null(all[1].ExpiresUtc);
+    }
+
+    [Fact]
+    public void An_end_time_survives_a_new_store_and_is_written_as_utc()
+    {
+        var at = new DateTime(2026, 11, 22, 8, 30, 15, 123, DateTimeKind.Utc);
+        new ShareStore(_dir).Upsert(Record() with { ExpiresUtc = at });
+
+        Assert.Equal(at, Assert.Single(new ShareStore(_dir).All()).ExpiresUtc);
+        Assert.Contains("\"ExpiresUtc\": \"2026-11-22T08:30:15.123Z\"", File.ReadAllText(FilePath), StringComparison.Ordinal);
+
+        new ShareStore(_dir).Upsert(Record() with { ExpiresUtc = null });
+        Assert.Contains("\"ExpiresUtc\": null", File.ReadAllText(FilePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Only_an_active_or_broken_share_past_its_end_time_counts_as_expired()
+    {
+        var at = new DateTime(2026, 11, 22, 8, 0, 0, DateTimeKind.Utc);
+        var r = Record() with { ExpiresUtc = at };
+
+        Assert.False(r.IsExpired(at.AddTicks(-1)));
+        Assert.True(r.IsExpired(at));
+        Assert.True((r with { State = ShareState.Broken }).IsExpired(at));
+        Assert.False((r with { State = ShareState.Closed }).IsExpired(at.AddDays(1)));
+        Assert.False((r with { ExpiresUtc = null }).IsExpired(DateTime.MaxValue));
+    }
+
+    private static string RecordJson(string tail, string id = "6f1c0f5e-7c43-4a59-9d0c-1d5c9f0b1a01") =>
+        "{\"Id\":\"" + id + "\",\"OriginalItemId\":\"0b9a2c7e-1f6d-4c1a-8a51-2b8e1d7c6f02\","
+        + "\"Kind\":\"Movie\",\"Title\":\"Heat\",\"Year\":1995,\"ProviderIds\":{\"Imdb\":\"tt0113277\"},"
+        + "\"SourceLibraryId\":\"3c2d1e0f-9a8b-4c7d-8e6f-5a4b3c2d1e03\",\"SharerUserId\":\"4d3e2f10-0b9c-4d8e-9f70-6b5c4d3e2f04\","
+        + "\"SharerName\":\"Adult\",\"RecipientUserId\":\"5e4f3021-1cad-4e9f-a081-7c6d5e4f3005\",\"CreatedUtc\":\"2026-11-19T08:00:00Z\","
+        + "\"State\":\"Active\",\"StateReason\":null,\"FolderName\":\"Heat (1995) [swm-6f1c0f5e]\"" + tail + "}";
 
     // The other members in the shape they were first written (unchanged since): PolicySnapshot and Libraries 19d3036,
     // KnownRealLibraries 5696761, SharePlaylists and RefusalNotes 1332f29.

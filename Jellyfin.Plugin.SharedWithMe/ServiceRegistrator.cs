@@ -74,7 +74,9 @@ public class ServiceRegistrator : IPluginServiceRegistrator
                 () => Plugin.Instance?.Configuration.TvSharingPlaylists ?? false,
                 sync.CurrentSetupProblem,
                 sp.GetRequiredService<PluginGate>(),
-                sp.GetRequiredService<ILogger<SharePlaylistManager>>());
+                sp.GetRequiredService<ILogger<SharePlaylistManager>>(),
+                null,
+                () => Plugin.Instance?.Configuration.TvShareDays ?? 0);
         });
 
         serviceCollection.AddSingleton(sp =>
@@ -157,6 +159,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
                 TimeSpan.FromSeconds(1),
                 logger);
         });
+        serviceCollection.AddSingleton(sp => new ExpiryWatch(sp.GetRequiredService<ShareStore>(), sp.GetRequiredService<ILogger<ExpiryWatch>>()));
         serviceCollection.AddHostedService<SyncHost>();
         serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, UserEventConsumer>();
         serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserEventConsumer>();

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Jellyfin.Plugin.SharedWithMe.Model;
 
@@ -52,6 +54,8 @@ public enum ShareState
 /// entry is removed.</param>
 /// <param name="CountedUtc">When <paramref name="FailedChecks"/> or <paramref name="MissingChecks"/> last went up; the next
 /// count waits <c>ShareSynchronizer.MinCheckInterval</c> after it, so the refresh or scan it queued can land.</param>
+/// <param name="ExpiresUtc">When the share ends by itself (UTC); null until someone removes it. A value that is present but
+/// cannot be read loads as long past, so the share ends (see <see cref="ExpiryJsonConverter"/>).</param>
 public record ShareRecord(
     Guid Id,
     Guid OriginalItemId,
@@ -73,4 +77,60 @@ public record ShareRecord(
     int EmptyChecks = 0,
     bool ViaPlaylist = false,
     int DanglingRuns = 0,
-    DateTime? CountedUtc = null);
+    DateTime? CountedUtc = null,
+    [property: JsonConverter(typeof(ExpiryJsonConverter))] DateTime? ExpiresUtc = null)
+{
+    /// <summary>
+    /// Whether the share's time is up at <paramref name="nowUtc"/>: it has an expiry at or before that moment and is in a
+    /// state the check-shares run ends (Active or Broken). A Closed share has ended already. The one test every caller uses.
+    /// </summary>
+    /// <param name="nowUtc">The current time (UTC).</param>
+    /// <returns>True when the share must end now.</returns>
+    public bool IsExpired(DateTime nowUtc) =>
+        ExpiresUtc is { } until && until <= nowUtc && State is ShareState.Active or ShareState.Broken;
+}
+
+/// <summary>
+/// Reads and writes <see cref="ShareRecord.ExpiresUtc"/>. A JSON null (or no member at all) is "until removed". A timestamp
+/// is read as UTC: one with an offset is converted, one without is taken as UTC. Anything else (a string that is not a
+/// date, a number, an object) is read as <see cref="DateTime.MinValue"/>, so an expiry that was set but cannot be read
+/// ends the share rather than keeping it for ever. Written as a round-trip UTC timestamp.
+/// </summary>
+public sealed class ExpiryJsonConverter : JsonConverter<DateTime?>
+{
+    /// <inheritdoc />
+    public override bool HandleNull => true;
+
+    /// <inheritdoc />
+    public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        switch (reader.TokenType)
+        {
+            case JsonTokenType.Null:
+                return null;
+            case JsonTokenType.String when reader.TryGetDateTime(out var value):
+                return value.Kind switch
+                {
+                    DateTimeKind.Utc => value,
+                    DateTimeKind.Local => value.ToUniversalTime(),
+                    _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+                };
+            default:
+                reader.Skip();
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+        }
+    }
+
+    /// <inheritdoc />
+    public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
+    {
+        if (value is { } v)
+        {
+            writer.WriteStringValue(DateTime.SpecifyKind(v.Kind == DateTimeKind.Local ? v.ToUniversalTime() : v, DateTimeKind.Utc));
+        }
+        else
+        {
+            writer.WriteNullValue();
+        }
+    }
+}
