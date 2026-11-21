@@ -267,3 +267,42 @@ Rulings recorded during Task 11 (2026-11-19):
   its episodes is left.
 - A restore turns sharing from TV apps off and removes the playlists, so they do not come straight back.
 
+
+## Version 0.2 additions
+
+Three features on top of 0.1. Defaults keep 0.1 behaviour for anyone who changes nothing.
+
+### A. Chosen sharers
+
+`WhoMayShare` gains a fourth value, `SelectedProfiles`. Administrators may always share. Any other profile may share only
+when it is in the new setting `AllowedSharers` (a list of user ids). The audit page shows a checkbox per enabled
+non-administrator profile under "Who may share" when `SelectedProfiles` is picked. Everything that already asks "may this
+profile share" (the API, the playlists, the share page's list of people) goes through the one `MayShare` check, so the
+`Share with <name>` playlists appear and disappear with the setting. A profile that stops being allowed keeps the shares it
+already made (as with the other values); administrators remove them on the audit page.
+
+### B. Expiring shares
+
+A share record gains `ExpiresUtc` (null = until removed). The web share page and the audit page's "Add title" get a
+"Keep it" choice: until I remove it, 1 day, 1 week, or a date. A new admin setting `TvShareDays` (0 = until removed)
+is the expiry applied to shares made from a TV playlist, which has no way to choose. The check-shares run closes a share
+whose `ExpiresUtc` has passed, exactly as if it had been removed: state Closed, reason "expired", copy and library entry
+removed, playlist entry taken out. The audit page and the share page show the expiry and say "expired" afterwards.
+Expiry never extends access. A record whose expiry cannot be read is treated as not expired only if it was never set.
+
+### C. Parent approval
+
+New setting `ApprovalMode`: `None` (the 0.1 behaviour, default) or `LimitedProfiles`. With `LimitedProfiles`, a share made
+by a profile that has an age limit (or blocks unrated items, i.e. is "restricted" by the same test the playlists use)
+is created in a new state `Pending`: no copy, no library, no change to anyone's access. Administrators' shares and shares by
+unrestricted profiles are unaffected. The sharer sees "Waiting for approval" (share page, and the playlist entry is kept, not
+read as taken out). The audit page lists pending shares at the top with Approve and Decline. Approve builds the share through
+the normal path (all the usual rules are checked again at that moment) and makes it Active; Decline closes it with reason
+"declined" and takes it out of the playlist. A pending share never appears to the recipient. Pending shares do not expire
+unless the sharer withdraws them (Undo on the share page).
+
+Notification: a new admin setting `NotifyUrl`. When set, the plugin POSTs a small JSON body
+`{"event": "approval-needed"|"shared"|"approved"|"declined", "message": "<plain sentence>", ...}` to it, once per event,
+never blocking the share (a short timeout, failures logged and ignored, no retry storm). A second setting
+`NotifyOn` is `Nothing` (default), `ApprovalsOnly` or `EverySharing`. The message names the people and the title,
+never a file path.
