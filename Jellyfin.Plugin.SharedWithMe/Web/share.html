@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Share - Jellyfin</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="{{BASE}}/web/themes/dark/theme.css">
+    <style>
+        body { font-family: "Noto Sans", sans-serif; margin: 0; background: #101010; color: rgba(255, 255, 255, 0.87); }
+        main { max-width: 52em; margin: 0 auto; padding: 1.5em 1.25em 3em; }
+        h1 { font-weight: 400; margin: 0 0 0.25em; }
+        h2 { font-weight: 400; margin: 2em 0 0.5em; border-bottom: 1px solid rgba(255, 255, 255, 0.2); padding-bottom: 0.25em; }
+        p { line-height: 1.5; }
+        a { color: #00a4dc; }
+        table { width: 100%; border-collapse: collapse; margin: 0.5em 0; }
+        th, td { text-align: left; padding: 0.45em 0.6em 0.45em 0; border-bottom: 1px solid rgba(255, 255, 255, 0.15); vertical-align: top; }
+        th { font-weight: 600; }
+        label { display: block; margin: 1em 0 0.3em; }
+        td label { display: inline; margin: 0 0 0 0.3em; }
+        input[type="search"], select { font: inherit; padding: 0.5em; min-width: 18em; max-width: 100%; background: #292929; color: inherit; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 0.2em; }
+        button { font: inherit; padding: 0.45em 1.1em; margin: 0.5em 0.5em 0 0; background: #303030; color: inherit; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 0.2em; cursor: pointer; }
+        button.primary { background: #00a4dc; border-color: #00a4dc; color: #fff; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .note { opacity: 0.75; }
+        .outcome { font-weight: 600; min-height: 1.5em; }
+    </style>
+</head>
+<body>
+<main id="swm-share-page">
+    <h1>Share</h1>
+    <p id="swm-who" class="note">Checking who you are...</p>
+
+    <div id="swm-signin" hidden>
+        <p>Sign in to Jellyfin in this browser first, then open this page again.</p>
+        <p><a id="swm-signin-link" href="{{BASE}}/web/">Open Jellyfin</a></p>
+    </div>
+
+    <div id="swm-content" hidden>
+        <section aria-labelledby="swm-share-title">
+            <h2 id="swm-share-title">Share something</h2>
+            <p id="swm-cannot-share" hidden>Sharing is not open to your profile on this server, so there is no one you can share with. Ask the person who runs the server if you think it should be.</p>
+            <div id="swm-share-form-area" hidden>
+                <p class="note">Search the titles you can see, pick one, choose who to share it with, then Share.</p>
+                <form id="swm-search-form">
+                    <label for="swm-term">Search titles you can see</label>
+                    <input type="search" id="swm-term" autocomplete="off">
+                    <button type="submit">Search</button>
+                </form>
+                <p id="swm-results-note" class="note" role="status" aria-live="polite"></p>
+                <table id="swm-results" hidden>
+                    <thead><tr><th scope="col">Pick</th><th scope="col">Title</th><th scope="col">Kind</th><th scope="col">Rating</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <label for="swm-recipient">Share with</label>
+                <select id="swm-recipient"></select>
+                <div><button type="button" id="swm-share" class="primary">Share</button></div>
+                <p id="swm-share-status" class="outcome" role="status" aria-live="polite"></p>
+                <p id="swm-tv" class="note" hidden></p>
+            </div>
+        </section>
+
+        <section aria-labelledby="swm-mine-title">
+            <h2 id="swm-mine-title">You shared</h2>
+            <p id="swm-mine-empty">You have not shared anything.</p>
+            <p id="swm-mine-hidden" hidden>Some titles you shared earlier are no longer visible to you. An administrator can remove them.</p>
+            <table id="swm-mine" hidden>
+                <thead><tr><th scope="col">Title</th><th scope="col">With</th><th scope="col">Date</th><th scope="col">State</th><th scope="col"></th></tr></thead>
+                <tbody></tbody>
+            </table>
+            <p id="swm-mine-status" class="outcome" role="status" aria-live="polite"></p>
+        </section>
+
+        <section aria-labelledby="swm-notes-title">
+            <h2 id="swm-notes-title">Not shared</h2>
+            <p id="swm-notes-empty">Nothing you put in a "Share with" playlist was turned down.</p>
+            <table id="swm-notes" hidden>
+                <thead><tr><th scope="col">Title</th><th scope="col">For</th><th scope="col">Why</th><th scope="col">When</th></tr></thead>
+                <tbody></tbody>
+            </table>
+            <button type="button" id="swm-notes-clear" hidden>Clear</button>
+            <p id="swm-notes-status" class="outcome" role="status" aria-live="polite"></p>
+        </section>
+
+        <section aria-labelledby="swm-received-title">
+            <h2 id="swm-received-title">Shared with you</h2>
+            <p id="swm-received-empty">Nothing has been shared with you.</p>
+            <table id="swm-received" hidden>
+                <thead><tr><th scope="col">Title</th><th scope="col">Shared by</th><th scope="col">Date</th></tr></thead>
+                <tbody></tbody>
+            </table>
+            <p class="note">Titles shared with you are in your "Shared with ..." library in every Jellyfin app.</p>
+        </section>
+
+        <p><a id="swm-back" href="{{BASE}}/web/">Back to Jellyfin</a></p>
+    </div>
+</main>
+<script src="{{BASE}}/SharedWithMe/Page/share.js"></script>
+</body>
+</html>

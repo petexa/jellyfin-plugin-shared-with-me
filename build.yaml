@@ -1,0 +1,15 @@
+# Written by tools/package.py from the csproj <Version> and Plugin.PluginGuid; do not edit by hand.
+name: "Shared With Me"
+guid: "4069397e-cf0d-460a-9a00-e5175c137516"
+version: "0.1.0.0"
+targetAbi: "12.4.0.0"
+framework: "net10.0"
+owner: "petexa"
+overview: "Share one title with one other profile, such as a film above a child's age limit."
+description: >
+  A user who can see a film or series can share it with one other profile that cannot. The title appears for that profile in a library of its own. To keep it there, the plugin changes every profile's library access list and blocked tags: read the README before installing. Sharing works from the web page the plugin adds, and from TV apps through private playlists.
+category: "General"
+artifacts:
+  - "Jellyfin.Plugin.SharedWithMe.dll"
+changelog: >
+  First release.

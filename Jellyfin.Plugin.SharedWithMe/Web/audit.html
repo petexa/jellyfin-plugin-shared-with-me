@@ -1,0 +1,112 @@
+<div id="swm-audit-page" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox" data-controller="__plugin/SharedWithMeAudit.js">
+    <div data-role="content">
+        <div class="content-primary">
+            <style>
+                #swm-audit-page table { width: 100%; border-collapse: collapse; margin: 0.5em 0 1em; }
+                #swm-audit-page th, #swm-audit-page td { text-align: left; padding: 0.4em 0.6em 0.4em 0; border-bottom: 1px solid rgba(128, 128, 128, 0.35); vertical-align: top; }
+                #swm-audit-page th { font-weight: 600; }
+                #swm-audit-page .swm-note { opacity: 0.8; margin: 0.25em 0 0.75em; }
+                #swm-audit-page .swm-outcome { font-weight: 600; min-height: 1.2em; }
+                #swm-audit-page section { margin-bottom: 2.5em; }
+                #swm-audit-page .swm-problem { border: 1px solid currentColor; padding: 0.75em 1em; margin-bottom: 2em; }
+            </style>
+
+            <h2 class="sectionTitle">Shared With Me</h2>
+            <p class="swm-note">Who has been given which title, and whether they can see it right now. "Visible now" is asked of the server each time this page loads.</p>
+            <p id="swm-status" class="swm-outcome" role="status" aria-live="polite"></p>
+
+            <section aria-labelledby="swm-link-title">
+                <h2 id="swm-link-title" class="sectionTitle">Where family members share</h2>
+                <p class="swm-note">Jellyfin shows plugin pages to administrators only, so everyone else needs this address. Send it to them, or bookmark it on their phone or tablet. They sign in to Jellyfin as usual first. On a TV app they need no address: the "Share with ..." playlists appear in "Add to playlist".</p>
+                <input is="emby-input" type="text" id="swm-link" label="Share page address" readonly />
+                <button is="emby-button" type="button" id="swm-link-copy" class="raised"><span>Copy</span></button>
+                <p id="swm-link-status" class="swm-outcome" role="status" aria-live="polite"></p>
+            </section>
+
+            <div id="swm-problem" class="swm-problem hide" role="alert">
+                <h3>Sharing is not set up correctly</h3>
+                <p id="swm-problem-text"></p>
+            </div>
+
+            <section aria-labelledby="swm-profiles-title">
+                <h2 id="swm-profiles-title" class="sectionTitle">Profiles</h2>
+                <div id="swm-profiles"></div>
+            </section>
+
+            <section aria-labelledby="swm-add-title">
+                <h2 id="swm-add-title" class="sectionTitle">Add title</h2>
+                <p class="swm-note">You share as yourself, so you can only share a title you can see.</p>
+                <form id="swm-add-form">
+                    <div class="inputContainer">
+                        <input is="emby-input" type="search" id="swm-add-term" label="Search titles" autocomplete="off" />
+                    </div>
+                    <button is="emby-button" type="submit" class="raised"><span>Search</span></button>
+                </form>
+                <p id="swm-add-results-note" class="swm-note"></p>
+                <table id="swm-add-results" class="hide">
+                    <thead><tr><th scope="col">Pick</th><th scope="col">Title</th><th scope="col">Kind</th><th scope="col">Rating</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <div class="selectContainer">
+                    <select is="emby-select" id="swm-add-profile" label="Share with"></select>
+                </div>
+                <button is="emby-button" type="button" id="swm-add-share" class="raised button-submit"><span>Share</span></button>
+                <p id="swm-add-status" class="swm-outcome" role="status" aria-live="polite"></p>
+            </section>
+
+            <section aria-labelledby="swm-check-title">
+                <h2 id="swm-check-title" class="sectionTitle">Check now</h2>
+                <p class="swm-note">Runs the full check of every share that otherwise runs after each library scan and every 6 hours.</p>
+                <button is="emby-button" type="button" id="swm-check" class="raised"><span>Check now</span></button>
+                <p id="swm-check-status" class="swm-outcome" role="status" aria-live="polite"></p>
+                <p id="swm-diagnostics" class="swm-note"></p>
+            </section>
+
+            <section aria-labelledby="swm-settings-title">
+                <h2 id="swm-settings-title" class="sectionTitle">Settings</h2>
+                <form id="swm-settings-form">
+                    <div class="selectContainer">
+                        <select is="emby-select" id="swm-who" label="Who may share">
+                            <option value="Everyone">Everyone</option>
+                            <option value="UncappedOnly">Only profiles without an age limit</option>
+                            <option value="AdminsOnly">Only administrators</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer">
+                        <input is="emby-input" type="text" id="swm-root" label="Share folder" autocomplete="off" />
+                        <div class="fieldDescription">The folder that holds the shared copies. Leave it empty to use the server's data folder. It must be outside every library and support symbolic links.</div>
+                        <div id="swm-root-locked" class="fieldDescription hide">The share folder can't be changed while the plugin manages access. Remove every share and restore everyone below first.</div>
+                    </div>
+                    <div class="checkboxContainer">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="swm-tv" />
+                            <span>Sharing from TV apps</span>
+                        </label>
+                        <div class="fieldDescription">Everyone who may share gets a private playlist "Share with &lt;name&gt;" for each profile with limits; adding a film or an episode there shares it in any app, removing it stops sharing. Turning this off removes those playlists; shares stay.</div>
+                    </div>
+                    <button is="emby-button" type="submit" class="raised button-submit"><span>Save</span></button>
+                </form>
+                <p id="swm-settings-status" class="swm-outcome" role="status" aria-live="polite"></p>
+            </section>
+
+            <section aria-labelledby="swm-notes-title">
+                <h2 id="swm-notes-title" class="sectionTitle">Not shared</h2>
+                <p class="swm-note">Titles put in a "Share with" playlist that were not shared, and why. Kept 30 days.</p>
+                <p id="swm-notes-empty">Nothing was turned down.</p>
+                <table id="swm-notes" class="hide">
+                    <thead><tr><th scope="col">Whose playlist</th><th scope="col">Title</th><th scope="col">For</th><th scope="col">Why</th><th scope="col">When</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </section>
+
+            <section aria-labelledby="swm-switched-title">
+                <h2 id="swm-switched-title" class="sectionTitle">Profiles the plugin changed</h2>
+                <p class="swm-note">To keep each shared copy to its one profile, the plugin moved these profiles from "all libraries" to a list of libraries. Restore puts them back, removes the share libraries and the "Share with" playlists, and turns sharing from TV apps off. A profile whose library list was changed after the plugin moved it is left on that list.</p>
+                <ul id="swm-switched"></ul>
+                <p id="swm-restore-why" class="swm-note"></p>
+                <button is="emby-button" type="button" id="swm-restore" class="raised"><span>Restore everyone</span></button>
+                <p id="swm-restore-status" class="swm-outcome" role="status" aria-live="polite"></p>
+            </section>
+        </div>
+    </div>
+</div>
