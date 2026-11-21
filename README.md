@@ -49,7 +49,8 @@ Once it is installed (see "Install"):
   or blocked tags will fight with this one.
 
 **Who may share, and the default.** By default any profile, including a child with an age limit, can share a title
-within their own limit with a sibling whose limit is lower, with no approval and no notification. The setting "Who may
+within their own limit with a sibling whose limit is lower, with no approval and no notification (both can be turned on,
+see "Approval and notifications" below). The setting "Who may
 share" (plugin settings) has four values: everyone (the default), only profiles with no age limit, only
 administrators, or administrators and the profiles you tick. With the last one the audit page shows a tick box for each
 enabled profile that is not an administrator: for example tick Sam and leave Jo and Alex unticked, and Sam may share
@@ -73,10 +74,13 @@ so a later Restore does not put them back on "all libraries": tick that by hand 
 
 - **Restore everyone** (audit page) works only after every share is removed. It removes the share libraries and
   playlists, any shared copy still on disk, the plugin's tags, puts the users it moved back on "all libraries" (except
-  those whose list you narrowed since, see above), and turns sharing from TV apps off.
+  those whose list you narrowed since, see above), and turns sharing from TV apps off. Shares still waiting for approval
+  do not count (they changed nothing): they do not stop a restore, and a restore that finishes closes them ("sharing was
+  switched off"), so a later approval cannot bring the plugin back.
 - **Uninstall** (Dashboard, Plugins) does not wait for shares to be removed:
   - It removes every playlist, copy, share library and plugin tag, and puts the users it moved back on "all libraries"
-    (except those whose list you narrowed since, see above).
+    (except those whose list you narrowed since, see above). Shares waiting for approval are discarded (closed in the
+    renamed record of shares).
   - It does this before the restart; the restart then unloads the plugin.
   - It does not turn the "Sharing from TV apps" setting off. If you install the plugin again later, it makes the
     playlists and adds their tags again at once.
@@ -140,7 +144,9 @@ By hand:
   users need the address: there is no menu entry for them.
 - **Audit page (administrators):** Dashboard, Plugins, Shared With Me. It shows every profile and the shares it received:
   - who shared each title, and whether the profile can see it right now (asked of the server, not read from settings);
-  - the settings: who may share, the share folder, sharing from TV apps and how many days a share made from a TV app lasts;
+  - at the top, when there are any, the shares waiting for approval, with Approve and Decline;
+  - the settings: who may share, the share folder, sharing from TV apps and how many days a share made from a TV app lasts,
+    approval, and the notification address with a "Send a test message" button;
   - when each share ends ("until removed" or a date), and "expired" afterwards;
   - "Add title", "Check now", and "Restore everyone".
 - **TV apps:** each user who may share gets a private playlist `Share with <name>` for each profile with restrictions.
@@ -191,6 +197,48 @@ By hand:
 - **When something fails,** the plugin is built so that the shared title disappears for the recipient rather than anyone
   seeing more than before. The failure cases in the test suites check this.
 
+## Approval and notifications
+
+**Approval.** The setting "Approval" (plugin settings) is off by default. With "Shares by profiles with limits wait for an
+administrator", a share made by a profile that is not an administrator and has an age limit or other restrictions (it
+blocks unrated items, blocks or allows tags of its own, or cannot open every library: the same test that decides who gets
+a `Share with <name>` playlist) is not made at once. It waits:
+
+- Every rule is checked when the profile shares, so a share that could never happen is refused at once, as before.
+- While it waits nothing exists for it: no copy, no share library, and nobody's library access or tags change. The
+  recipient sees nothing of it anywhere (pages, libraries, search).
+- The share page shows it to the person who shared as "Waiting for approval", with Undo to withdraw it. From a TV app,
+  the title stays in the `Share with <name>` playlist while it waits; taking it out withdraws it.
+- The audit page lists every waiting share at the top, with who wants to share what with whom and when, and Approve and
+  Decline buttons. Approve checks every rule again at that moment and then makes the share exactly as an immediate one is
+  made. If a rule now refuses it (for example the recipient can see the title by now, or the sharer may no longer share),
+  it is closed with the reason "no longer possible: ..." instead. Decline closes it as "declined", with an optional note
+  (plain text, at most 200 characters) that the person who shared sees on the share page; a title declined from a TV
+  playlist is taken out of the playlist and does not come back by itself (putting it in again asks again).
+- A waiting share does not expire. Its end time, if one was chosen (or set by "Days a share made from a TV app lasts"),
+  counts from when it was asked for: approved in time, it ends then; approved after that time, it is closed as expired
+  instead.
+- Shares by administrators and by profiles without restrictions are never held. Turning approval off does not make
+  waiting shares happen: approve or decline them.
+
+**Notifications.** Set "Notification address" to an `http://` or `https://` address, and "Notify on" to "Approvals only"
+(a share is waiting, approved, declined) or "Every share" (those, and every share made at once, from a TV app too). The
+server then POSTs a small JSON message to that address, for example:
+
+```json
+{"event": "approval-needed", "message": "Sam is waiting for approval to share Example Film with Jo.", "sharer": "Sam", "recipient": "Jo", "title": "Example Film"}
+```
+
+- `event` is `approval-needed`, `shared`, `approved` or `declined` (and `test` for the button on the audit page). The
+  message names the people and the title, nothing else: no file path, no decline note.
+- It is sent by the Jellyfin server, so the address must be reachable from the server, and it can be any address the
+  server can reach (only an administrator can set it). Redirects are not followed.
+- It never holds up or fails a share: it is sent in the background, gets one attempt with at most 5 seconds, and a failure
+  is written to the server log as a warning naming only the address's scheme, host and port.
+- An address that is not `http://` or `https://` is refused when the settings are saved (the previous one stays).
+- "Send a test message" sends `{"event": "test", "message": "Shared With Me test message.", ...}` to the saved address
+  and says whether it was accepted.
+
 ## Known limits and costs
 
 - Watch progress on a shared copy is separate from the original's.
@@ -216,7 +264,12 @@ By hand:
   one. Set "Who may share" to a value 0.1 knows before going back to 0.1: it does not know "administrators and the
   profiles you tick", and may then fail to read its settings and fall back to the default, everyone. Versions before 0.2's
   expiring shares do not know end dates: they ignore them and write the record back without them, so every share with an
-  end date then lasts until it is removed. Remove those shares first.
+  end date then lasts until it is removed. Remove those shares first. Versions before 0.2's parent approval do not know the
+  state "Pending": if the record of shares holds a share waiting for approval, they cannot read the record at all and
+  pause sharing (see "If the plugin's record of shares cannot be read"): existing copies stay, but no share can be made or
+  removed and nothing is kept in step until the newer version is back or the record is fixed. They also ignore the
+  approval and notification settings, so every allowed share is made at once and nothing is sent, and their next settings
+  save drops those settings. A decline note on a closed share is dropped when they write the record. Before going back, approve or decline every waiting share and set "Approval" to off.
 
 ## Jellyfin behaviour you should know about
 

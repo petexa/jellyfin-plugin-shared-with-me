@@ -385,14 +385,21 @@ public class SharePlaylistManager
         || u.AllowedTags.Count > 0
         || (!u.AllLibraries && realLibraries.Any(l => !u.EnabledLibraries.Contains(l)));
 
-    // A real library the synchronizer has not recorded yet is granted by the next full run; until then it is not counted,
-    // so a new library never makes everyone look restricted for a moment.
-    private List<Guid> RealLibrariesToCount()
+    /// <summary>
+    /// The real libraries <see cref="IsRestricted"/> counts. A real library the synchronizer has not recorded yet is granted
+    /// by the next full run; until then it is not counted, so a new library never makes everyone look restricted for a moment.
+    /// </summary>
+    /// <param name="gateway">The server.</param>
+    /// <param name="store">The share store.</param>
+    /// <returns>The libraries.</returns>
+    public static List<Guid> RealLibrariesToCount(IServerGateway gateway, ShareStore store)
     {
-        var real = _gateway.GetRealLibraryIds();
-        var known = _store.KnownRealLibraries();
+        var real = gateway.GetRealLibraryIds();
+        var known = store.KnownRealLibraries();
         return known is null ? real.ToList() : real.Where(known.Contains).ToList();
     }
+
+    private List<Guid> RealLibrariesToCount() => RealLibrariesToCount(_gateway, _store);
 
     private void Create(Guid sharer, Guid recipient, string name)
     {
@@ -515,13 +522,14 @@ public class SharePlaylistManager
         var records = _store.All().Where(r => r.SharerUserId == sharer && r.RecipientUserId == recipient).ToList();
         var titles = Titles(entries.ItemIds, out var others);
 
-        // 1. Shares the synchronizer closed or broke leave the playlist; only a Broken one has something to tell.
-        // An expired share is the one closed share that sharing again would NOT refuse, so it lets go of the playlist only
-        // once its entry is really gone (read back). Until then the record keeps the title, which is left out of step 3 on
-        // every pass, so an entry the server kept never comes back as a new share.
-        foreach (var r in records.Where(r => r.ViaPlaylist && r.State != ShareState.Active))
+        // 1. Shares the synchronizer closed or broke leave the playlist; only a Broken one has something to tell. A pending
+        // share keeps its entry: the entry is the request, and it is not read as taken out.
+        // An expired, declined or not-approved share is a closed share that sharing again would NOT refuse (or would make a
+        // new request of), so it lets go of the playlist only once its entry is really gone (read back). Until then the
+        // record keeps the title, which is left out of step 3 on every pass, so an entry the server kept never comes back.
+        foreach (var r in records.Where(r => r.ViaPlaylist && r.State is not (ShareState.Active or ShareState.Pending)))
         {
-            var expired = r.State == ShareState.Closed && r.StateReason == ShareSynchronizer.ExpiredReason;
+            var expired = LetsGoOnlyWhenGone(r);
             if (titles.ContainsKey(r.OriginalItemId))
             {
                 _gateway.RemoveFromPlaylist(playlistId, r.OriginalItemId);
@@ -550,9 +558,10 @@ public class SharePlaylistManager
             Note(sharer, recipient, VisibleTitle(sharer, other), "Only movies and series can be shared.");
         }
 
-        // 3. Every title in the playlist without an Active share from this sharer is shared, or taken out. A share made
-        // here gets the TV end date (TvShareDays), counted from now.
-        var active = _store.All().Where(r => r.SharerUserId == sharer && r.RecipientUserId == recipient && r.State == ShareState.Active).ToList();
+        // 3. Every title in the playlist without an Active or Pending share from this sharer is shared (or asked for), or
+        // taken out. A share made here gets the TV end date (TvShareDays), counted from now; one that waits for approval
+        // keeps that end time, counted from the request.
+        var active = _store.All().Where(r => r.SharerUserId == sharer && r.RecipientUserId == recipient && r.State is (ShareState.Active or ShareState.Pending)).ToList();
         var days = Math.Clamp(_tvShareDays(), 0, PluginConfiguration.MaxShareDays);
         DateTime? expires = days > 0 ? _utcNow().AddDays(days) : null;
         foreach (var title in titles.Keys.ToList())
@@ -662,6 +671,19 @@ public class SharePlaylistManager
         }
     }
 
+    /// <summary>
+    /// Whether a closed share that a playlist took in may let go of its title only once the entry is read back gone: one that
+    /// expired, was declined, or was closed when an approval found it no longer possible. Sharing again would not refuse such
+    /// a title (or would make a new request of it), so an entry the server kept would otherwise come back as a new share.
+    /// </summary>
+    /// <param name="r">The share.</param>
+    /// <returns>True for those closed shares.</returns>
+    public static bool LetsGoOnlyWhenGone(ShareRecord r) =>
+        r.State == ShareState.Closed
+        && (r.StateReason == ShareSynchronizer.ExpiredReason
+            || r.StateReason == ShareService.DeclinedReason
+            || (r.StateReason?.StartsWith(ShareService.NoLongerPossiblePrefix, StringComparison.Ordinal) ?? false));
+
     /// <summary>The note for a dangling entry that kept a share for <see cref="DanglingRunsLimit"/> full runs and was removed.</summary>
     public const string DanglingRemovedMessage = "A playlist entry pointed at a file that no longer exists and was removed.";
 
@@ -689,7 +711,8 @@ public class SharePlaylistManager
     private void KeepOrRemove(Guid sharer, Guid recipient, Guid playlistId, PlaylistEntries now, bool full)
     {
         var present = Titles(now.ItemIds, out _);
-        var mine = _store.All().Where(r => r.SharerUserId == sharer && r.RecipientUserId == recipient && r.State == ShareState.Active && r.ViaPlaylist).ToList();
+        // A pending share whose entry its owner took out is withdrawn the same way.
+        var mine = _store.All().Where(r => r.SharerUserId == sharer && r.RecipientUserId == recipient && r.State is (ShareState.Active or ShareState.Pending) && r.ViaPlaylist).ToList();
         var folders = mine.ToDictionary(r => r.Id, r => _gateway.GetItem(r.OriginalItemId) is { } o ? TitleFolder(o) : null);
         var removedDangling = false;
         foreach (var r in mine)

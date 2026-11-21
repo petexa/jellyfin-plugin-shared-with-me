@@ -28,7 +28,22 @@ public record UserRef(Guid Id, string Name);
 /// <param name="NotFound">The copy should be on disk but the server has no item for it, past the first scan.</param>
 /// <param name="ExpiresUtc">When the share ends by itself; null until it is removed.</param>
 /// <param name="Expired">The share's time is up but the check-shares run has not ended it yet (it does within seconds).</param>
-public record AuditShare(Guid Id, string Title, int? Year, string? OfficialRating, string SharerName, bool SharerExists, DateTime CreatedUtc, ShareState State, string? StateReason, bool VisibleNow, bool Pending, bool NotFound, DateTime? ExpiresUtc = null, bool Expired = false);
+/// <param name="DeclineNote">The note written when it was declined, if any.</param>
+public record AuditShare(Guid Id, string Title, int? Year, string? OfficialRating, string SharerName, bool SharerExists, DateTime CreatedUtc, ShareState State, string? StateReason, bool VisibleNow, bool Pending, bool NotFound, DateTime? ExpiresUtc = null, bool Expired = false, string? DeclineNote = null);
+
+/// <summary>A share waiting for approval, as the audit page lists it.</summary>
+/// <param name="Id">Share id.</param>
+/// <param name="Title">Title.</param>
+/// <param name="Year">Year, if known.</param>
+/// <param name="OfficialRating">The original's own rating, or null when the original is gone.</param>
+/// <param name="SharerName">Who asked (current name, or the name at the time when the sharer is gone).</param>
+/// <param name="SharerExists">Whether the sharer still exists.</param>
+/// <param name="RecipientName">Who it would be shared with (current name).</param>
+/// <param name="CreatedUtc">When it was asked for.</param>
+/// <param name="ExpiresUtc">The end time the sharer chose; null until removed.</param>
+/// <param name="ViaPlaylist">Asked for from a TV app (a "Share with" playlist).</param>
+/// <param name="EndTimePassed">The chosen end time has passed: approving now closes it as expired.</param>
+public record AwaitingApproval(Guid Id, string Title, int? Year, string? OfficialRating, string SharerName, bool SharerExists, string RecipientName, DateTime CreatedUtc, DateTime? ExpiresUtc, bool ViaPlaylist, bool EndTimePassed);
 
 /// <summary>One profile on the audit page.</summary>
 /// <param name="User">The profile.</param>
@@ -44,10 +59,15 @@ public record AuditProfile(UserRef User, string CapLabel, IReadOnlyList<AuditSha
 /// <param name="ShareRootLocked">Whether a change of the share folder setting would be refused (while in charge).</param>
 /// <param name="NarrowedUsers">Profiles the plugin moved whose library list was changed since: a restore or an uninstall
 /// leaves them on that list rather than putting them back on "all libraries".</param>
-public record AuditReport(IReadOnlyList<AuditProfile> Profiles, IReadOnlyList<UserRef> SwitchedUsers, bool InCharge, string? SetupProblem, bool ShareRootLocked, IReadOnlyList<UserRef>? NarrowedUsers = null)
+/// <param name="AwaitingApproval">Shares waiting for an administrator's approval, oldest first. They are not listed under
+/// their recipient's profile: nothing has been given yet.</param>
+public record AuditReport(IReadOnlyList<AuditProfile> Profiles, IReadOnlyList<UserRef> SwitchedUsers, bool InCharge, string? SetupProblem, bool ShareRootLocked, IReadOnlyList<UserRef>? NarrowedUsers = null, IReadOnlyList<AwaitingApproval>? AwaitingApproval = null)
 {
     /// <summary>Gets the profiles a restore would leave on their own list (never null).</summary>
     public IReadOnlyList<UserRef> NarrowedUsers { get; init; } = NarrowedUsers ?? Array.Empty<UserRef>();
+
+    /// <summary>Gets the shares waiting for approval (never null).</summary>
+    public IReadOnlyList<AwaitingApproval> AwaitingApproval { get; init; } = AwaitingApproval ?? Array.Empty<AwaitingApproval>();
 }
 
 /// <summary>The shares a user made that they may see, and how many more are hidden from them.</summary>
@@ -180,7 +200,7 @@ public record ReceivedShare(Guid Id, string Title, int? Year, string SharerName,
 /// </summary>
 public class AuditService
 {
-    /// <summary>Refusal while any share is Active.</summary>
+    /// <summary>Refusal while any share is Active (a share waiting for approval changed nothing and does not count).</summary>
     public const string SharesExistMessage = "Remove every share first, then restore.";
 
     /// <summary>Restore stopped because a copy stayed on disk.</summary>
@@ -270,8 +290,29 @@ public class AuditService
         }
 
         var ratings = _gateway.GetRatings();
-        var records = _store.All();
+        var all = _store.All();
+        var records = all.Where(r => r.State != ShareState.Pending).ToList();
         var libraries = _store.Libraries();
+        var now = _utcNow();
+        var awaiting = all.Where(r => r.State == ShareState.Pending)
+            .OrderBy(r => r.CreatedUtc)
+            .Select(r =>
+            {
+                var sharer = _gateway.GetUser(r.SharerUserId);
+                return new AwaitingApproval(
+                    r.Id,
+                    r.Title,
+                    r.Year,
+                    _gateway.GetItem(r.OriginalItemId)?.OfficialRating,
+                    sharer?.Name ?? r.SharerName,
+                    sharer is not null,
+                    _gateway.GetUser(r.RecipientUserId)?.Name ?? "(deleted profile)",
+                    r.CreatedUtc,
+                    r.ExpiresUtc,
+                    r.ViaPlaylist,
+                    r.ExpiresUtc is { } until && until <= now);
+            })
+            .ToList();
         var profiles = users
             .OrderBy(u => u.Name, StringComparer.OrdinalIgnoreCase)
             .Select(u => new AuditProfile(new UserRef(u.Id, u.Name), CapLabel(u, ratings), Rows(records.Where(r => r.RecipientUserId == u.Id), u.Id, libraries)))
@@ -297,12 +338,13 @@ public class AuditService
             .OrderBy(u => u.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var inCharge = _sync.IsInCharge();
-        return new AuditReport(profiles, switched, inCharge, _sync.CurrentSetupProblem(), inCharge, narrowed);
+        return new AuditReport(profiles, switched, inCharge, _sync.CurrentSetupProblem(), inCharge, narrowed, awaiting);
     });
 
     /// <summary>
     /// Puts every user the plugin isolated back on "all libraries" and removes every trace of sharing, in an order where
-    /// no step can show anyone more: refuse while a share is Active or the share folder setting is wrong; turn sharing
+    /// no step can show anyone more: refuse while a share is Active (Pending ones do not count, and are closed) or the share
+    /// folder setting is wrong; turn sharing
     /// from TV apps off and remove every plugin playlist; remove every copy still on disk (a failure stops here); remove any share-layout library the store did not know; then restore
     /// access, and check the plugin is no longer in charge.
     /// </summary>
@@ -392,7 +434,8 @@ public class AuditService
                     pending,
                     notFound,
                     r.ExpiresUtc,
-                    r.IsExpired(now));
+                    r.IsExpired(now),
+                    r.DeclineNote);
             })
             .ToList();
     }
@@ -578,10 +621,10 @@ public class AuditService
             _sync.SweepUnknownCopies();
         }
 
-        // Forced: Active records are ended too, and every folder the plugin made that no record knows goes as well.
+        // Forced: Active and Pending records are ended too, and every folder the plugin made that no record knows goes as well.
         if (forced)
         {
-            foreach (var r in Read<IReadOnlyList<ShareRecord>>(() => _store.All(), Array.Empty<ShareRecord>(), "reading the share records").Where(r => r.State == ShareState.Active))
+            foreach (var r in Read<IReadOnlyList<ShareRecord>>(() => _store.All(), Array.Empty<ShareRecord>(), "reading the share records").Where(r => r.State is ShareState.Active or ShareState.Pending))
             {
                 Attempt(() => _store.Upsert(r with { State = ShareState.Closed, StateReason = UninstalledReason, ClosedUtc = _utcNow() }), "closing a share record", left);
             }
@@ -707,6 +750,13 @@ public class AuditService
             {
                 _logger.LogError("Shared With Me: restore ran but the plugin is still in charge");
                 return Failed(NotFinishedMessage) with { RestoredUsers = restored, LeftOnOwnList = ownList };
+            }
+
+            // Shares still waiting for approval changed nothing, so they never stop a restore; they end with a finished
+            // one, so a later approval cannot put the plugin back in charge.
+            foreach (var r in _store.All().Where(r => r.State == ShareState.Pending))
+            {
+                _store.Upsert(r with { State = ShareState.Closed, StateReason = ShareSynchronizer.SwitchedOffReason, ClosedUtc = _utcNow() });
             }
 
             _logger.LogInformation("Shared With Me: restored {Count} profiles to all libraries", restored.Count);

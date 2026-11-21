@@ -87,7 +87,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <summary>
     /// Saves a new configuration (the dashboard and <c>POST /Plugins/{id}/Configuration</c> both end here). While the
     /// plugin is in charge a changed ShareRoot is refused: the old one is kept, every other field is applied. The list of
-    /// chosen sharers is tidied (no empty ids, no repeats). Every save queues the playlists pass, so a change of who may
+    /// chosen sharers is tidied (no empty ids, no repeats). A notification address that is not empty and not an absolute
+    /// http:// or https:// address is refused: the previous one is kept. Every save queues the playlists pass, so a change of who may
     /// share, or of the chosen sharers, adds and removes the "Share with" playlists to match.
     /// </summary>
     /// <param name="configuration">The new configuration.</param>
@@ -100,6 +101,13 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         }
 
         next.AllowedSharers = (next.AllowedSharers ?? Array.Empty<Guid>()).Where(id => id != Guid.Empty).Distinct().ToArray();
+        next.NotifyUrl = next.NotifyUrl?.Trim() ?? string.Empty;
+        if (!PluginConfiguration.IsValidNotifyUrl(next.NotifyUrl))
+        {
+            // The address is not echoed: it may carry a secret. The previous one stays.
+            Logger?.Invoke("Shared With Me: the notification address was not changed: only an absolute http:// or https:// address is accepted.");
+            next.NotifyUrl = PluginConfiguration.IsValidNotifyUrl(Configuration.NotifyUrl) ? Configuration.NotifyUrl : string.Empty;
+        }
 
         void Save(bool inCharge)
         {

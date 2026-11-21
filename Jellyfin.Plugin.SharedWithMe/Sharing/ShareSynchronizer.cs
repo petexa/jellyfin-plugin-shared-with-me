@@ -488,7 +488,7 @@ public class ShareSynchronizer
     {
         var kindRoot = ShareService.KindRoot(root, r.RecipientUserId, r.Kind);
 
-        // Rule 1: recipient gone. Records in any state go, with their folder.
+        // Rule 1: recipient gone. Records in any state go (a pending one too), with their folder.
         var recipient = _gateway.GetUser(r.RecipientUserId);
         if (recipient is null)
         {
@@ -499,6 +499,13 @@ public class ShareSynchronizer
                 c.Removed++;
             }
 
+            return;
+        }
+
+        // A pending share has nothing on disk or on the server to keep in step, and must never be built here: only an
+        // administrator's approval builds it (through ShareService). Its rules are checked again at that moment.
+        if (r.State == ShareState.Pending)
+        {
             return;
         }
 

@@ -15,6 +15,16 @@
             <p class="swm-note">Who has been given which title, and whether they can see it right now. "Visible now" is asked of the server each time this page loads.</p>
             <p id="swm-status" class="swm-outcome" role="status" aria-live="polite"></p>
 
+            <section id="swm-approvals-area" class="hide" aria-labelledby="swm-approvals-title">
+                <h2 id="swm-approvals-title" class="sectionTitle">Waiting for approval</h2>
+                <p class="swm-note">These profiles asked to share a title. Nothing is shared, and nobody's access changes, until you approve. Approve checks every rule again first. A note you write when you decline is shown to the person who asked.</p>
+                <table id="swm-approvals">
+                    <thead><tr><th scope="col">Who asks</th><th scope="col">Title</th><th scope="col">Rating</th><th scope="col">With</th><th scope="col">Asked</th><th scope="col">Until</th><th scope="col">From</th><th scope="col"></th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <p id="swm-approvals-status" class="swm-outcome" role="status" aria-live="polite"></p>
+            </section>
+
             <section aria-labelledby="swm-link-title">
                 <h2 id="swm-link-title" class="sectionTitle">Where family members share</h2>
                 <p class="swm-note">Jellyfin shows plugin pages to administrators only, so everyone else needs this address. Send it to them, or bookmark it on their phone or tablet. They sign in to Jellyfin as usual first. On a TV app they need no address: the "Share with ..." playlists appear in "Add to playlist".</p>
@@ -106,9 +116,29 @@
                         <input is="emby-input" type="number" id="swm-tv-days" label="Days a share made from a TV app lasts" min="0" max="366" step="1" />
                         <div class="fieldDescription">A TV app has no way to choose how long to share, so a title added to a "Share with" playlist is shared for this many days, then taken out of the playlist. 0 keeps it until it is removed. At most 366. Shares already made keep their own end date.</div>
                     </div>
+                    <div class="selectContainer">
+                        <select is="emby-select" id="swm-approval" label="Approval">
+                            <option value="None">No approval: shares are made at once</option>
+                            <option value="LimitedProfiles">Shares by profiles with limits wait for an administrator</option>
+                        </select>
+                        <div class="fieldDescription">With approval on, a share by a profile that is not an administrator and has an age limit or other restrictions waits under "Waiting for approval" at the top of this page. Nothing is shared until you approve it.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <input is="emby-input" type="url" id="swm-notify-url" label="Notification address" autocomplete="off" />
+                        <div class="fieldDescription">Leave it empty for no notifications. Otherwise an http:// or https:// address the server sends a short JSON message to (for example a Home Assistant or ntfy webhook). It is sent from the server, waits at most 5 seconds, and does not follow redirects. The message names the people and the title, nothing else.</div>
+                    </div>
+                    <div class="selectContainer">
+                        <select is="emby-select" id="swm-notify-on" label="Notify on">
+                            <option value="Nothing">Nothing</option>
+                            <option value="ApprovalsOnly">Approvals only (waiting, approved, declined)</option>
+                            <option value="EverySharing">Every share</option>
+                        </select>
+                    </div>
                     <button is="emby-button" type="submit" class="raised button-submit"><span>Save</span></button>
+                    <button is="emby-button" type="button" id="swm-notify-test" class="raised"><span>Send a test message</span></button>
                 </form>
                 <p id="swm-settings-status" class="swm-outcome" role="status" aria-live="polite"></p>
+                <p id="swm-notify-status" class="swm-outcome" role="status" aria-live="polite"></p>
             </section>
 
             <section aria-labelledby="swm-notes-title">

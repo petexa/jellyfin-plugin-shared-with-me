@@ -1,5 +1,7 @@
-using System.IO;
 using System;
+using System.IO;
+using System.Net.Http;
+using System.Text;
 using Jellyfin.Data.Events.Users;
 using Jellyfin.Plugin.SharedWithMe.Configuration;
 using Jellyfin.Plugin.SharedWithMe.Server;
@@ -36,6 +38,31 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<LibraryAccessManager>();
         serviceCollection.AddSingleton<ShareFolderBuilder>();
         serviceCollection.AddSingleton<PluginGate>();
+
+        // Notifications: one client of the server's own factory that never follows a redirect (the address is the
+        // administrator's, but a redirect could send the body somewhere they did not choose) and gives up after 5 s.
+        serviceCollection.AddHttpClient(ShareNotifier.HttpClientName, client => client.Timeout = ShareNotifier.Timeout)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false,
+                ConnectTimeout = ShareNotifier.Timeout,
+            });
+        serviceCollection.AddSingleton(sp =>
+        {
+            var factory = sp.GetRequiredService<IHttpClientFactory>();
+            return new ShareNotifier(
+                () => Plugin.Instance?.Configuration.NotifyUrl,
+                () => Plugin.Instance?.Configuration.NotifyOn ?? NotifyOn.Nothing,
+                async (uri, body, cancel) =>
+                {
+                    var client = factory.CreateClient(ShareNotifier.HttpClientName);
+                    using var content = new StringContent(body, Encoding.UTF8, "application/json");
+                    using var response = await client.PostAsync(uri, content, cancel).ConfigureAwait(false);
+                    return (int)response.StatusCode;
+                },
+                sp.GetRequiredService<ILogger<ShareNotifier>>());
+        });
         serviceCollection.AddSingleton(sp =>
         {
             var gateway = sp.GetRequiredService<JellyfinServerGateway>();
@@ -47,7 +74,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
                 sp.GetRequiredService<ShareFolderBuilder>(),
                 () => gateway.ShareRoot,
                 sp.GetRequiredService<PluginGate>(),
-                sp.GetRequiredService<ILogger<ShareService>>());
+                sp.GetRequiredService<ILogger<ShareService>>(),
+                null,
+                null,
+                () => Plugin.Instance?.Configuration.ApprovalMode ?? ApprovalMode.None,
+                sp.GetRequiredService<ShareNotifier>());
         });
         serviceCollection.AddSingleton(sp =>
         {

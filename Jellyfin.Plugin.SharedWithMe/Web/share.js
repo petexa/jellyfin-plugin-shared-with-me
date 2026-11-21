@@ -115,10 +115,36 @@
         return isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     }
 
-    // The check-shares run ends an expired share within seconds; until it has, the page already says "expired".
+    // The check-shares run ends an expired share within seconds; until it has, the page already says "expired". A share
+    // waiting for approval does not expire while it waits.
     function expired(s) {
         return (s.State === 'Closed' && s.StateReason === 'expired')
-            || (s.State !== 'Closed' && !!s.ExpiresUtc && new Date(s.ExpiresUtc).getTime() <= Date.now());
+            || (s.State !== 'Closed' && s.State !== 'Pending' && !!s.ExpiresUtc && new Date(s.ExpiresUtc).getTime() <= Date.now());
+    }
+
+    // A request an administrator declined, or that could not be approved because it was no longer possible.
+    function notApproved(s) {
+        return s.State === 'Closed' && (s.StateReason === 'declined' || String(s.StateReason || '').indexOf('no longer possible: ') === 0);
+    }
+
+    function stateText(s) {
+        if (s.State === 'Pending') {
+            return 'Waiting for approval';
+        }
+
+        if (expired(s)) {
+            return 'expired';
+        }
+
+        if (s.State === 'Closed' && s.StateReason === 'declined') {
+            return s.DeclineNote ? 'Declined: ' + s.DeclineNote : 'Declined';
+        }
+
+        if (notApproved(s)) {
+            return 'Not approved: ' + s.StateReason;
+        }
+
+        return s.State === 'Active' ? 'shared' : s.State + (s.StateReason ? ': ' + s.StateReason : '');
     }
 
     function localDay(date) {
@@ -172,8 +198,9 @@
         }
 
         $('swm-mine-hidden').hidden = !(res.data.HiddenCount > 0);
-        // Only the caller's own shares (an administrator's list holds everyone's); a closed one only when it expired.
-        const shares = res.data.Shares.filter((s) => s.SharerUserId === myId && (s.State !== 'Closed' || expired(s)));
+        // Only the caller's own shares (an administrator's list holds everyone's); a closed one only when it expired, was
+        // declined or could not be approved.
+        const shares = res.data.Shares.filter((s) => s.SharerUserId === myId && (s.State !== 'Closed' || expired(s) || notApproved(s)));
         $('swm-mine-empty').hidden = shares.length > 0;
         table.hidden = shares.length === 0;
         for (const s of shares) {
@@ -184,7 +211,7 @@
             row.appendChild(el('td', who));
             row.appendChild(el('td', day(s.CreatedUtc)));
             row.appendChild(el('td', until(s.ExpiresUtc)));
-            row.appendChild(el('td', expired(s) ? 'expired' : s.State === 'Active' ? 'shared' : s.State + (s.StateReason ? ': ' + s.StateReason : '')));
+            row.appendChild(el('td', stateText(s)));
             const cell = el('td');
             if (s.State !== 'Closed') {
                 const undo = el('button', 'Undo');
@@ -268,7 +295,8 @@
     }
 
     async function undoShare(share, title, who, button) {
-        if (!window.confirm('Stop sharing "' + title + '" with ' + who + '?')) {
+        const waiting = share.State === 'Pending';
+        if (!window.confirm(waiting ? 'Stop asking to share "' + title + '" with ' + who + '?' : 'Stop sharing "' + title + '" with ' + who + '?')) {
             return;
         }
 
@@ -277,7 +305,7 @@
         button.disabled = false;
         await loadMine();
         $('swm-mine-status').textContent = res.ok
-            ? 'Stopped sharing "' + title + '" with ' + who + '.'
+            ? (waiting ? 'Stopped asking to share "' : 'Stopped sharing "') + title + '" with ' + who + '.'
             : 'Could not undo "' + title + '". ' + failure(res);
     }
 
@@ -356,9 +384,12 @@
             await loadMine();
         }
 
-        status.textContent = res.ok
-            ? 'Shared "' + title + '" with ' + who + (res.data && res.data.ExpiresUtc ? ' until ' + until(res.data.ExpiresUtc) : '') + '.'
-            : failure(res);
+        const ends = res.data && res.data.ExpiresUtc ? ' until ' + until(res.data.ExpiresUtc) : '';
+        status.textContent = !res.ok
+            ? failure(res)
+            : res.data && res.data.State === 'Pending'
+                ? 'Asked to share "' + title + '" with ' + who + ends + '. It is waiting for approval: nothing is shared until an administrator approves it.'
+                : 'Shared "' + title + '" with ' + who + ends + '.';
     }
 
     async function start() {

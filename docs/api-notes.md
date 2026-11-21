@@ -116,6 +116,8 @@ How they were found: XML docs of the server DLLs (`/jellyfin/*.xml` in `jf-share
 - `reset.py` puts both back to their defaults.
 - 0.2 adds `WhoMayShare: "SelectedProfiles"` and `AllowedSharers` (an array of user ids), see "Version 0.2, A" below.
 - 0.2 adds `TvShareDays` (an integer, 0 to 366, default 0), see "Version 0.2, B" below.
+- 0.2 adds `ApprovalMode` (`"None"` | `"LimitedProfiles"`), `NotifyUrl` (a string) and `NotifyOn` (`"Nothing"` |
+  `"ApprovalsOnly"` | `"EverySharing"`), see "Version 0.2, C" below.
 
 ### Refusal messages
 - An item that does not exist and an item the sharer cannot see get one identical body: `{"Refusal":"NotVisibleToSharer","Message":"You can't share that title."}`. Proved for Spike Fifteen as kid1 and for random GUIDs.
@@ -705,3 +707,48 @@ What the uninstall does (`AuditService.Uninstall`, one forced run of the same te
   Until column; an expired share stays in "You shared" as "expired" with no Undo. The audit page shows Until per share,
   "Closed: expired" afterwards, "Keep it" under Add title, and the TV days setting, which saved and read back. No page
   errors.
+
+## Version 0.2, C: parent approval and notifications
+
+- New endpoints (administrators only, `403` otherwise, the same `CallerIsAdmin` check as `/Audit`):
+  `POST /SharedWithMe/Shares/{id}/Approve` answers `200` with the Active record, `409 {"Message": ...}` when it was closed
+  instead (no longer possible, or its end time passed) or could not be built just now, `404` when no share with that id is
+  Pending. `POST /SharedWithMe/Shares/{id}/Decline` takes an optional `{"Reason": "..."}`; the body may be empty
+  (`EmptyBodyBehavior.Allow`: `jf.py` sends an empty body with `Content-Type: application/json` and got `200`).
+  `POST /SharedWithMe/Audit/NotifyTest` answers `200 {"Sent": bool, "Message": "..."}`.
+- `GET /SharedWithMe/Audit` gains `AwaitingApproval` (oldest first: Id, Title, Year, OfficialRating, SharerName,
+  SharerExists, RecipientName, CreatedUtc, ExpiresUtc, ViaPlaylist, EndTimePassed). Records gain `DeclineNote`.
+- What was observed on the spike (`test_parent_approval.py`, kid1 at cap 18 sub 1, still restricted):
+  - kid1's share of Spike Fifteen with kid2 answered `200` with `State: "Pending"` and an empty `FolderName`. Over 3 s and a
+    full sync no user's `EnableAllFolders`, `BlockedTags` or `EnabledFolders` changed, everyone stayed on all libraries,
+    the library list was unchanged, and kid2 had no `Shared with kid2` view, nothing in `/Received`, no copy and no search
+    hit. The record was still Pending after the sync. The plugin was not in charge (no snapshot) until the approval.
+  - Approve: `200`, same id and `CreatedUtc`, kid2's copy listed and `PlaybackInfo` returned media sources within the
+    test's wait, `Shared with kid2` created. A second Approve: `404`.
+  - Decline with `"Not this one,\nask me at the weekend. <b>ok</b>"` stored `Not this one, ask me at the weekend. <b>ok</b>`
+    (the line break became a space; the markup is kept as text and the pages only ever insert it with `textContent`).
+  - A withdrawn request (`DELETE` by kid1) left no record. adult's and admin's shares were Active at once; with
+    `ApprovalMode: "None"` kid1's was too.
+  - A title kid1 added to its `Share with kid2` playlist (an episode of Spike Show) became one Pending record with
+    `ViaPlaylist: true`; after two full syncs the entry was still there, there was no second record and no refusal note.
+    Approved, kid2 got the series copy and the entry stayed. Spike Eighteen added and declined: the entry left the playlist
+    and stayed out over three more syncs; the record ended `ViaPlaylist: false`.
+  - The approved web share (Spike Fifteen) was mirrored into kid1's playlist as before, so the playlist then held it and the
+    episode.
+  - Restore answered `409` while two Active shares existed and a Pending one; with only the Pending one left it answered `200`
+    and the Pending record read back `Closed` / `sharing was switched off`.
+- Notifications, to a listener the test runs on its own machine (the spike container reached it over the LAN):
+  - The test message arrived as `{"event": "test", "message": "Shared With Me test message.", "sharer": "", "recipient": "",
+    "title": ""}` with a `Content-Type` starting `application/json`.
+  - `ApprovalsOnly`: one `approval-needed` per request, `approved`, `declined`; nothing for adult's immediate share.
+    `EverySharing` added `shared` ("admin shared Spike Eighteen with kid2."). `Nothing`: no POST at all over 3 s.
+  - The decline note never appears in a message.
+  - A save with `ftp://...`, `file:///...`, `not a url` or `javascript:...` read back the previous address.
+  - Nothing listening on the port: the share answered well under the test's 2.5 s limit, and the server log said
+    `the shared notification to http://<host>:<port> could not be sent: the connection failed (ConnectionError)`. A listener
+    that never answers: the share returned at once and the log said `no answer within 5 seconds` about 5 s later. Only
+    scheme, host and port are logged (the address carried `?token=abc` and a path).
+  - An address answering `302`: the test message said `not accepted: the address answered 302`, and the listener saw no
+    request for the redirect target.
+- Control: the same test against the feature-B build (HEAD before this change) failed at its first check: the settings
+  read back without `NotifyUrl` (B has no such setting).

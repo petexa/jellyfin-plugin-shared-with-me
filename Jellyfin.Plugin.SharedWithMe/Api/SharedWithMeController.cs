@@ -10,6 +10,7 @@ using Jellyfin.Plugin.SharedWithMe.Sharing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.SharedWithMe.Api;
@@ -29,6 +30,18 @@ public class CreateShareRequest
     /// </summary>
     public DateTime? ExpiresUtc { get; set; }
 }
+
+/// <summary>Body of a decline; it may be left out.</summary>
+public class DeclineRequest
+{
+    /// <summary>Gets or sets a short note for the sharer (plain text; at most 200 characters are kept).</summary>
+    public string? Reason { get; set; }
+}
+
+/// <summary>What the test message did.</summary>
+/// <param name="Sent">Whether it was sent and answered with a 2xx status.</param>
+/// <param name="Message">One plain sentence saying what happened.</param>
+public record NotifyTestResponse(bool Sent, string Message);
 
 /// <summary>Why a share was refused.</summary>
 /// <param name="Refusal">The refusal code.</param>
@@ -82,7 +95,8 @@ public record SearchResultDto(Guid Id, string Title, int? Year, ShareKind Kind, 
 /// <param name="ShareRootLocked">Whether the server keeps the current share folder whatever a save sends (while in charge).</param>
 /// <param name="Diagnostics">The plugin's counters.</param>
 /// <param name="NarrowedUsers">Profiles the plugin moved whose list was changed since; a restore leaves them on it.</param>
-public record AuditResponse(IReadOnlyList<AuditProfile> Profiles, IReadOnlyList<UserRef> SwitchedUsers, bool InCharge, string? SetupProblem, bool ShareRootLocked, DiagnosticsDto Diagnostics, IReadOnlyList<UserRef> NarrowedUsers);
+/// <param name="AwaitingApproval">Shares waiting for an administrator's approval, oldest first.</param>
+public record AuditResponse(IReadOnlyList<AuditProfile> Profiles, IReadOnlyList<UserRef> SwitchedUsers, bool InCharge, string? SetupProblem, bool ShareRootLocked, DiagnosticsDto Diagnostics, IReadOnlyList<UserRef> NarrowedUsers, IReadOnlyList<AwaitingApproval> AwaitingApproval);
 
 /// <summary>What a successful restore did.</summary>
 /// <param name="RestoredUsers">Profiles put back on "all libraries".</param>
@@ -111,6 +125,7 @@ public class SharedWithMeController : ControllerBase
     private readonly AuditService _audit;
     private readonly SyncWorker _worker;
     private readonly SharePlaylistManager _playlists;
+    private readonly ShareNotifier _notifier;
     private readonly ILogger<SharedWithMeController> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="SharedWithMeController"/> class.</summary>
@@ -120,9 +135,11 @@ public class SharedWithMeController : ControllerBase
     /// <param name="audit">The audit service.</param>
     /// <param name="worker">The sync queue.</param>
     /// <param name="playlists">The "Share with" playlists (refusal notes).</param>
+    /// <param name="notifier">The notification sender (the test message).</param>
     /// <param name="logger">Logger.</param>
-    public SharedWithMeController(ShareService service, JellyfinServerGateway gateway, ShareSynchronizer sync, AuditService audit, SyncWorker worker, SharePlaylistManager playlists, ILogger<SharedWithMeController> logger)
+    public SharedWithMeController(ShareService service, JellyfinServerGateway gateway, ShareSynchronizer sync, AuditService audit, SyncWorker worker, SharePlaylistManager playlists, ShareNotifier notifier, ILogger<SharedWithMeController> logger)
     {
+        _notifier = notifier;
         _playlists = playlists;
         _service = service;
         _gateway = gateway;
@@ -145,7 +162,7 @@ public class SharedWithMeController : ControllerBase
         }
 
         var report = _audit.Build();
-        return Ok(new AuditResponse(report.Profiles, report.SwitchedUsers, report.InCharge, report.SetupProblem, report.ShareRootLocked, Diagnostics(), report.NarrowedUsers));
+        return Ok(new AuditResponse(report.Profiles, report.SwitchedUsers, report.InCharge, report.SetupProblem, report.ShareRootLocked, Diagnostics(), report.NarrowedUsers, report.AwaitingApproval));
     }
 
     /// <summary>Puts every profile the plugin changed back on "all libraries". Refused while any share is active.</summary>
@@ -318,9 +335,12 @@ public class SharedWithMeController : ControllerBase
         return withSummary ? Ok(result) : Ok(result.Shares);
     }
 
-    /// <summary>Shares an item with another profile, until it is removed or until <c>ExpiresUtc</c>.</summary>
+    /// <summary>
+    /// Shares an item with another profile, until it is removed or until <c>ExpiresUtc</c>. With approval on for the caller's
+    /// profile the new share has State <c>Pending</c> and nothing is shared until an administrator approves it.
+    /// </summary>
     /// <param name="request">The item, the recipient and, optionally, the end time.</param>
-    /// <returns>The new share, or 409 with the refusal (<c>InvalidExpiry</c> for an end time in the past or too far ahead).</returns>
+    /// <returns>The new share (Active, or Pending), or 409 with the refusal (<c>InvalidExpiry</c> for an end time in the past or too far ahead).</returns>
     [HttpPost("Shares")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -347,7 +367,7 @@ public class SharedWithMeController : ControllerBase
         return Ok(record);
     }
 
-    /// <summary>Removes a share. Only its sharer or an administrator may.</summary>
+    /// <summary>Removes a share, or withdraws one waiting for approval. Only its sharer or an administrator may.</summary>
     /// <param name="id">The share id.</param>
     /// <returns>204, or 404 when the share is unknown or not the caller's to remove.</returns>
     [HttpDelete("Shares/{id}")]
@@ -362,6 +382,85 @@ public class SharedWithMeController : ControllerBase
         }
 
         return _service.Remove(id, me) ? NoContent() : NotFound();
+    }
+
+    /// <summary>
+    /// Approves a share waiting for approval (administrators only): every rule is checked again now and the share is made.
+    /// </summary>
+    /// <param name="id">The share id.</param>
+    /// <returns>The Active share; 409 with a plain message when it was closed instead (no longer possible, or its end time
+    /// passed while it waited) or could not be made just now (it still waits); 404 when no share with that id waits; 403.</returns>
+    [HttpPost("Shares/{id}/Approve")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public ActionResult<ShareRecord> ApproveShare([FromRoute] Guid id)
+    {
+        if (!CallerIsAdmin() || ActingUser() is not { } me)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        var outcome = _service.Approve(id, me);
+        if (outcome.Result != ApprovalResult.NotFound)
+        {
+            _ = _worker.Request(SyncWork.Playlists);
+        }
+
+        return outcome.Result switch
+        {
+            ApprovalResult.Approved => Ok(outcome.Record),
+            ApprovalResult.NotFound => NotFound(new MessageResponse(outcome.Message)),
+            _ => Conflict(new MessageResponse(outcome.Message)),
+        };
+    }
+
+    /// <summary>
+    /// Declines a share waiting for approval (administrators only), with an optional short note shown to the sharer as plain
+    /// text. The body may be left out.
+    /// </summary>
+    /// <param name="id">The share id.</param>
+    /// <param name="request">The note, optional.</param>
+    /// <returns>The Closed share; 404 when no share with that id waits; 403.</returns>
+    [HttpPost("Shares/{id}/Decline")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult<ShareRecord> DeclineShare([FromRoute] Guid id, [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] DeclineRequest? request)
+    {
+        if (!CallerIsAdmin() || ActingUser() is not { } me)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        var record = _service.Decline(id, me, request?.Reason);
+        if (record is null)
+        {
+            return NotFound(new MessageResponse(ShareService.NotPendingMessage));
+        }
+
+        _ = _worker.Request(SyncWork.Playlists);
+        return Ok(record);
+    }
+
+    /// <summary>
+    /// Sends the test message ("Shared With Me test message.", event "test") to the notification address now, whatever
+    /// "Notify on" says (administrators only). It is sent from the server, follows no redirect and waits at most 5 seconds.
+    /// </summary>
+    /// <returns>Whether it was sent, and a plain sentence; 403.</returns>
+    [HttpPost("Audit/NotifyTest")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<NotifyTestResponse>> NotifyTest()
+    {
+        if (!CallerIsAdmin())
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        var (sent, message) = await _notifier.SendTestAsync().ConfigureAwait(false);
+        return Ok(new NotifyTestResponse(sent, message));
     }
 
     /// <summary>

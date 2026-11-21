@@ -69,7 +69,26 @@ function stateText(share) {
         return 'expired (ending now)';
     }
 
-    return share.StateReason ? share.State + ': ' + share.StateReason : share.State;
+    const text = share.StateReason ? share.State + ': ' + share.StateReason : share.State;
+    return share.DeclineNote ? text + ' ("' + share.DeclineNote + '")' : text;
+}
+
+// The notification address the server accepts: empty, or an absolute http:// or https:// address with a host.
+function notifyUrlOk(value) {
+    if (!value) {
+        return true;
+    }
+
+    if (/\s/.test(value) || value.length > 2048) {
+        return false;
+    }
+
+    try {
+        const u = new URL(value);
+        return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname;
+    } catch (e) {
+        return false;
+    }
 }
 
 // When a share ends: a date and a time, or "until removed".
@@ -157,6 +176,69 @@ export default function (view) {
         }
     }
 
+    // The shares waiting for approval, oldest first, at the top of the page; the section is shown only when there are some.
+    function renderApprovals(waiting) {
+        const area = $('swm-approvals-area');
+        const body = $('swm-approvals').querySelector('tbody');
+        body.replaceChildren();
+        area.classList.toggle('hide', !waiting.length);
+        say($('swm-approvals-title'), 'Waiting for approval (' + waiting.length + ')');
+        for (const w of waiting) {
+            const row = el('tr');
+            const title = titleWithYear(w.Title, w.Year);
+            row.appendChild(el('td', w.SharerExists ? w.SharerName : w.SharerName + ' (deleted)'));
+            row.appendChild(el('td', title));
+            row.appendChild(el('td', w.OfficialRating || 'unknown'));
+            row.appendChild(el('td', w.RecipientName));
+            row.appendChild(el('td', day(w.CreatedUtc)));
+            row.appendChild(el('td', w.EndTimePassed ? until(w.ExpiresUtc) + ' (passed: approving closes it)' : until(w.ExpiresUtc)));
+            row.appendChild(el('td', w.ViaPlaylist ? 'TV playlist' : 'share page'));
+            const cell = el('td');
+            const approve = el('button', 'Approve');
+            approve.type = 'button';
+            approve.setAttribute('is', 'emby-button');
+            approve.className = 'raised button-submit';
+            const reason = el('input');
+            reason.type = 'text';
+            reason.maxLength = 200;
+            reason.className = 'emby-input swm-decline-reason';
+            reason.placeholder = 'Note for ' + w.SharerName + ' (optional)';
+            reason.setAttribute('aria-label', 'Note for ' + w.SharerName + ' if you decline ' + title + ' (optional)');
+            const decline = el('button', 'Decline');
+            decline.type = 'button';
+            decline.setAttribute('is', 'emby-button');
+            decline.className = 'raised';
+            approve.addEventListener('click', () => approveShare(w, title, [approve, decline]));
+            decline.addEventListener('click', () => declineShare(w, title, reason.value, [approve, decline]));
+            cell.appendChild(approve);
+            cell.appendChild(reason);
+            cell.appendChild(decline);
+            row.appendChild(cell);
+            body.appendChild(row);
+        }
+    }
+
+    async function approveShare(w, title, buttons) {
+        buttons.forEach((b) => { b.disabled = true; });
+        const res = await api('POST', 'SharedWithMe/Shares/' + w.Id + '/Approve');
+        buttons.forEach((b) => { b.disabled = false; });
+        await load();
+        say($('swm-approvals-status'), res.ok
+            ? 'Approved: "' + title + '" is now shared with ' + w.RecipientName + '.'
+            : 'Not approved: "' + title + '". ' + failure(res));
+    }
+
+    async function declineShare(w, title, reason, buttons) {
+        buttons.forEach((b) => { b.disabled = true; });
+        const text = reason.trim();
+        const res = await api('POST', 'SharedWithMe/Shares/' + w.Id + '/Decline', text ? { Reason: text } : {});
+        buttons.forEach((b) => { b.disabled = false; });
+        await load();
+        say($('swm-approvals-status'), res.ok
+            ? 'Declined: "' + title + '" for ' + w.RecipientName + (text ? ', with your note.' : '.')
+            : 'Could not decline "' + title + '". ' + failure(res));
+    }
+
     function renderSwitched(report) {
         const list = $('swm-switched');
         list.replaceChildren();
@@ -199,6 +281,7 @@ export default function (view) {
         }
 
         audit = res.data;
+        renderApprovals(audit.AwaitingApproval || []);
         renderProblem(audit.SetupProblem);
         renderProfiles(audit.Profiles);
         renderSwitched(audit);
@@ -301,6 +384,9 @@ export default function (view) {
             $('swm-root').value = config.ShareRoot || '';
             $('swm-tv').checked = config.TvSharingPlaylists !== false;
             $('swm-tv-days').value = String(config.TvShareDays || 0);
+            $('swm-approval').value = config.ApprovalMode || 'None';
+            $('swm-notify-url').value = config.NotifyUrl || '';
+            $('swm-notify-on').value = config.NotifyOn || 'Nothing';
             await renderSharers(config.AllowedSharers || []);
             showSharers();
         } catch (e) {
@@ -453,6 +539,12 @@ export default function (view) {
         e.preventDefault();
         const status = $('swm-settings-status');
         const button = view.querySelector('#swm-settings-form button[type="submit"]');
+        const notifyUrl = $('swm-notify-url').value.trim();
+        if (!notifyUrlOk(notifyUrl)) {
+            say(status, 'Settings were not saved. The notification address must be empty, or start with http:// or https:// and name a server.');
+            return;
+        }
+
         button.disabled = true;
         try {
             const config = await ApiClient.getPluginConfiguration(PLUGIN_ID);
@@ -466,6 +558,10 @@ export default function (view) {
                 config.ShareRoot = $('swm-root').value.trim();
             }
 
+            config.ApprovalMode = $('swm-approval').value;
+            config.NotifyUrl = notifyUrl;
+            config.NotifyOn = $('swm-notify-on').value;
+
             await ApiClient.updatePluginConfiguration(PLUGIN_ID, config);
             await load();
             await loadSettings();
@@ -474,13 +570,28 @@ export default function (view) {
                 ? ' Profiles that may share besides administrators: ' + (tickedSharers().map((i) => i.dataset.name).join(', ') || 'none') + '.'
                 : '';
             const tvDays = Number($('swm-tv-days').value) || 0;
+            const notifyOn = { Nothing: 'nothing', ApprovalsOnly: 'approvals only', EverySharing: 'every share' }[$('swm-notify-on').value] || $('swm-notify-on').value;
             say(status, 'Settings saved.' + sharers + ' Sharing from TV apps: ' + ($('swm-tv').checked ? 'on' : 'off') + '.'
-                + ' Shares made from a TV app last ' + (tvDays ? tvDays + (tvDays === 1 ? ' day' : ' days') : 'until removed') + '.' + (audit && audit.SetupProblem ? ' There is still a setup problem, shown at the top of the page.' : ''));
+                + ' Shares made from a TV app last ' + (tvDays ? tvDays + (tvDays === 1 ? ' day' : ' days') : 'until removed') + '.'
+                + ' Approval: ' + ($('swm-approval').value === 'LimitedProfiles' ? 'shares by profiles with limits wait for an administrator' : 'off') + '.'
+                + ' Notifications: ' + ($('swm-notify-url').value ? notifyOn : 'off (no address)') + '.'
+                + (audit && audit.SetupProblem ? ' There is still a setup problem, shown at the top of the page.' : ''));
         } catch (err) {
             say(status, 'Settings were not saved. ' + (err && err.status ? 'The server answered ' + err.status + '.' : ''));
         } finally {
             button.disabled = false;
         }
+    }
+
+    // Sends "Shared With Me test message." to the saved address (save a changed address first).
+    async function notifyTest() {
+        const status = $('swm-notify-status');
+        const button = $('swm-notify-test');
+        button.disabled = true;
+        say(status, 'Sending a test message...');
+        const res = await api('POST', 'SharedWithMe/Audit/NotifyTest');
+        button.disabled = false;
+        say(status, res.ok && res.data ? res.data.Message : 'The test message could not be sent. ' + failure(res));
     }
 
     async function restore() {
@@ -549,6 +660,7 @@ export default function (view) {
     $('swm-who').addEventListener('change', showSharers);
     $('swm-add-keep').addEventListener('change', showKeep);
     $('swm-restore').addEventListener('click', restore);
+    $('swm-notify-test').addEventListener('click', notifyTest);
 
     view.addEventListener('viewshow', () => {
         $('swm-add-until').min = localDay(new Date());

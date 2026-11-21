@@ -9,6 +9,28 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.SharedWithMe.Sharing;
 
+/// <summary>What an approval did.</summary>
+public enum ApprovalResult
+{
+    /// <summary>The share was built and is Active.</summary>
+    Approved,
+
+    /// <summary>The share was no longer possible (or its end time had passed) and is now Closed.</summary>
+    Closed,
+
+    /// <summary>Building it failed; it is still Pending and can be approved again.</summary>
+    Failed,
+
+    /// <summary>No pending share has that id, or the caller is not an enabled administrator. Nothing changed.</summary>
+    NotFound,
+}
+
+/// <summary>What an approval did, in plain words for the administrator.</summary>
+/// <param name="Result">What happened.</param>
+/// <param name="Message">One plain sentence; empty when approved.</param>
+/// <param name="Record">The record as it is now (Active or Closed); null when nothing changed.</param>
+public record ApprovalOutcome(ApprovalResult Result, string Message, ShareRecord? Record);
+
 /// <summary>Creates, removes and lists shares. Every change runs under the shared <see cref="PluginGate"/>.</summary>
 public class ShareService
 {
@@ -30,6 +52,24 @@ public class ShareService
     /// <summary>Most search results returned.</summary>
     public const int SearchLimit = 30;
 
+    /// <summary>State reason of a pending share an administrator declined.</summary>
+    public const string DeclinedReason = "declined";
+
+    /// <summary>Start of the state reason of a pending share that could not be approved because a rule now refuses it.</summary>
+    public const string NoLongerPossiblePrefix = "no longer possible: ";
+
+    /// <summary>The longest decline note kept.</summary>
+    public const int DeclineNoteMaxLength = 200;
+
+    /// <summary>What an administrator sees for an approval of an unknown share, or of one that no longer waits.</summary>
+    public const string NotPendingMessage = "That share is not waiting for approval.";
+
+    /// <summary>What an administrator sees when a pending share's end time passed before it was approved.</summary>
+    public const string ExpiredWhileWaitingMessage = "The time this share was asked for ran out while it waited, so it was closed as expired. The person can share it again.";
+
+    /// <summary>What an administrator sees when building an approved share failed.</summary>
+    public const string ApproveFailedMessage = "The share could not be made just now. It is still waiting; try again, and check the server log if it keeps happening.";
+
     private readonly IServerGateway _gateway;
     private readonly ShareStore _store;
     private readonly ShareEligibility _eligibility;
@@ -40,6 +80,8 @@ public class ShareService
     private readonly ILogger _logger;
     private readonly Action<string> _probe;
     private readonly Func<DateTime> _utcNow;
+    private readonly Func<ApprovalMode> _approvalMode;
+    private readonly ShareNotifier? _notifier;
 
     /// <summary>Initializes a new instance of the <see cref="ShareService"/> class.</summary>
     /// <param name="gateway">The server seam.</param>
@@ -53,8 +95,12 @@ public class ShareService
     /// <param name="probeShareRoot">Checks the share root can hold links; defaults to
     /// <see cref="ShareFolderBuilder.ProbeSymlinkSupport"/>.</param>
     /// <param name="utcNow">Clock; defaults to <see cref="DateTime.UtcNow"/>.</param>
-    public ShareService(IServerGateway gateway, ShareStore store, ShareEligibility eligibility, LibraryAccessManager access, ShareFolderBuilder builder, Func<string> shareRoot, PluginGate gate, ILogger logger, Action<string>? probeShareRoot = null, Func<DateTime>? utcNow = null)
+    /// <param name="approvalMode">Reads the approval setting; <see cref="ApprovalMode.None"/> when null.</param>
+    /// <param name="notifier">Sends the notification events; none when null.</param>
+    public ShareService(IServerGateway gateway, ShareStore store, ShareEligibility eligibility, LibraryAccessManager access, ShareFolderBuilder builder, Func<string> shareRoot, PluginGate gate, ILogger logger, Action<string>? probeShareRoot = null, Func<DateTime>? utcNow = null, Func<ApprovalMode>? approvalMode = null, ShareNotifier? notifier = null)
     {
+        _approvalMode = approvalMode ?? (() => ApprovalMode.None);
+        _notifier = notifier;
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
         _probe = probeShareRoot ?? ShareFolderBuilder.ProbeSymlinkSupport;
         _gateway = gateway;
@@ -79,6 +125,9 @@ public class ShareService
     /// Shares an item. Order: the end time, share-root sanity, check, probe the share root, isolate users, build the
     /// folder, ensure the share library, record, queue a scan. Any exception once the folder exists removes the folder and
     /// the record (or keeps the record as Broken when the folder cannot be removed), then rethrows the original exception.
+    /// With <see cref="ApprovalMode.LimitedProfiles"/> and a sharer who needs approval (<see cref="NeedsApproval"/>) every
+    /// check still runs, so a doomed share is refused at once, but the share is only recorded as Pending: nothing after the
+    /// probe happens until <see cref="Approve"/>.
     /// </summary>
     /// <param name="sharerId">Who is sharing.</param>
     /// <param name="itemId">What they are sharing.</param>
@@ -91,7 +140,28 @@ public class ShareService
         _gate.Run(() => CreateLocked(sharerId, itemId, recipientId, expiresUtc));
 
     /// <summary>
-    /// Removes a share. Only the sharer or an administrator may. A share listed in its sharer's "Share with" playlist is
+    /// Approves a pending share (enabled administrators only): every rule is checked again as of now, then the share is built
+    /// by the same code as a new share and becomes Active, keeping its id, its creation time and the end time its sharer
+    /// chose. A share whose end time passed while it waited is closed as expired; one a rule now refuses is closed with the
+    /// reason "no longer possible: ...". Neither is left waiting.
+    /// </summary>
+    /// <param name="shareId">The pending share.</param>
+    /// <param name="actingUserId">Who is approving.</param>
+    /// <returns>What happened.</returns>
+    public ApprovalOutcome Approve(Guid shareId, Guid actingUserId) => _gate.Run(() => ApproveLocked(shareId, actingUserId));
+
+    /// <summary>
+    /// Declines a pending share (enabled administrators only): it is closed with the reason "declined" and the note, and taken
+    /// out of its sharer's "Share with" playlist. Nothing else changes: nothing was built for it.
+    /// </summary>
+    /// <param name="shareId">The pending share.</param>
+    /// <param name="actingUserId">Who is declining.</param>
+    /// <param name="note">A short note for the sharer, or null (see <see cref="CleanNote"/>).</param>
+    /// <returns>The closed record, or null (nothing changed) when no pending share has that id or the caller may not.</returns>
+    public ShareRecord? Decline(Guid shareId, Guid actingUserId, string? note) => _gate.Run(() => DeclineLocked(shareId, actingUserId, note));
+
+    /// <summary>
+    /// Removes a share. Only the sharer or an administrator may. A pending share is withdrawn the same way (it has no copy). A share listed in its sharer's "Share with" playlist is
     /// taken out of that playlist first; if that fails nothing is removed (a stale entry would share it again).
     /// </summary>
     /// <param name="shareId">The share.</param>
@@ -189,6 +259,63 @@ public class ShareService
             return (Refuse(Refusal.InvalidExpiry, ExpiryTooFarMessage), null);
         }
 
+        var (decision, prepared) = Prepare(sharerId, itemId, recipientId, null);
+        if (prepared is null)
+        {
+            return (decision, null);
+        }
+
+        var sharer = _gateway.GetUser(sharerId) ?? throw new InvalidOperationException($"Sharer {sharerId} vanished during the share.");
+        var record = new ShareRecord(
+            Guid.NewGuid(),
+            prepared.Item.Id,
+            prepared.Kind,
+            prepared.Item.Title,
+            prepared.Item.Year,
+            new Dictionary<string, string>(prepared.Item.ProviderIds),
+            prepared.Item.LibraryId,
+            sharerId,
+            sharer.Name,
+            recipientId,
+            now,
+            ShareState.Active,
+            null,
+            string.Empty,
+            ExpiresUtc: expires);
+
+        // Every rule above has passed, so a doomed share was refused already; one that needs approval is only recorded:
+        // nothing on disk, no library, no change to anyone's access or tags.
+        if (NeedsApproval(sharer))
+        {
+            record = record with { State = ShareState.Pending };
+            _store.Upsert(record);
+            _logger.LogInformation("Shared With Me: share {ShareId} by {Sharer} waits for approval", record.Id, sharer.Name);
+            Notify(ShareNotifier.ApprovalNeededEvent, record, prepared.Recipient.Name);
+            return (decision, record);
+        }
+
+        record = Build(prepared, record);
+        Notify(ShareNotifier.SharedEvent, record, prepared.Recipient.Name);
+        return (decision, record);
+    }
+
+    /// <summary>
+    /// Whether a share by this sharer waits for approval: <see cref="ApprovalMode.LimitedProfiles"/> is set, the sharer is
+    /// not an administrator, and the sharer is restricted by the test the playlists use
+    /// (<see cref="SharePlaylistManager.IsRestricted"/>, which ignores the plugin's own changes).
+    /// </summary>
+    /// <param name="sharer">The sharer.</param>
+    /// <returns>True when the share is created Pending.</returns>
+    public bool NeedsApproval(UserInfo sharer) =>
+        _approvalMode() == ApprovalMode.LimitedProfiles
+        && !sharer.IsAdmin
+        && SharePlaylistManager.IsRestricted(sharer, SharePlaylistManager.RealLibrariesToCount(_gateway, _store));
+
+    // Every rule a share must pass before anything changes, in the order Create has always checked them: the share root,
+    // eligibility (approving passes the pending record's id, so it does not count as a duplicate of itself), a copy resolved
+    // to its original, the share root's links, a disc folder, a series with no shareable episode. Null when refused.
+    private (Decision Decision, Prepared? Prepared) Prepare(Guid sharerId, Guid itemId, Guid recipientId, Guid? approving)
+    {
         // Before anything else (Check itself classifies libraries by the share root): a share root that overlaps a
         // library would turn that library's files into "share libraries", or the copies into a real library.
         var shareRoot = _shareRoot();
@@ -199,7 +326,7 @@ public class ShareService
             return (Refuse(Refusal.ShareFolderUnusable, SetupProblemMessage), null);
         }
 
-        var decision = _eligibility.Check(sharerId, itemId, recipientId);
+        var decision = _eligibility.Check(sharerId, itemId, recipientId, approving);
         if (decision.Refusal != Refusal.None)
         {
             return (decision, null);
@@ -242,36 +369,27 @@ public class ShareService
             return (Refuse(Refusal.NotShareableType, $"There are no episodes of {item.Title} you can share yet."), null);
         }
 
+        return (decision, new Prepared(decision, item, kind, shareRoot, media, recipientInfo));
+    }
+
+    // The one build of a share, for a new share and for an approved one alike: isolate users, build the folder, ensure the
+    // share library, record, queue a scan. Any exception once the folder exists removes the folder and the record (or keeps
+    // the record as Broken when the folder cannot be removed), then rethrows the original exception.
+    private ShareRecord Build(Prepared prepared, ShareRecord record)
+    {
         _access.EnsureIsolation();
 
-        var sharer = _gateway.GetUser(sharerId) ?? throw new InvalidOperationException($"Sharer {sharerId} vanished during the share.");
-        media ??= _gateway.GetSourceMedia(item.Id);
-        var kindRoot = KindRoot(shareRoot, recipientId, kind);
-        var record = new ShareRecord(
-            Guid.NewGuid(),
-            item.Id,
-            kind,
-            item.Title,
-            item.Year,
-            new Dictionary<string, string>(item.ProviderIds),
-            item.LibraryId,
-            sharerId,
-            sharer.Name,
-            recipientId,
-            now,
-            ShareState.Active,
-            null,
-            string.Empty,
-            ExpiresUtc: expires);
+        var media = prepared.Media ?? _gateway.GetSourceMedia(prepared.Item.Id);
+        var kindRoot = KindRoot(prepared.ShareRoot, record.RecipientUserId, prepared.Kind);
 
         // Build cleans up its own temporary folder when it fails, so nothing is left before the folder exists.
         // Every copy carries its recipient's tag, which every other user blocks (see LibraryAccessManager).
-        var tags = decision.CopyTags.Append(LibraryAccessManager.RecipientTag(recipientId)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var folder = _builder.Build(kindRoot, record, media, item.OfficialRating ?? string.Empty, decision.CustomRating ?? string.Empty, tags);
-        record = record with { FolderName = folder };
+        var tags = prepared.Decision.CopyTags.Append(LibraryAccessManager.RecipientTag(record.RecipientUserId)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var folder = _builder.Build(kindRoot, record, media, prepared.Item.OfficialRating ?? string.Empty, prepared.Decision.CustomRating ?? string.Empty, tags);
+        record = record with { FolderName = folder, State = ShareState.Active, StateReason = null };
         try
         {
-            var libraryId = _access.EnsureShareLibrary(recipientId, kind, kindRoot, folder);
+            var libraryId = _access.EnsureShareLibrary(record.RecipientUserId, prepared.Kind, kindRoot, folder);
             _store.Upsert(record);
             _gateway.QueueScan(libraryId);
         }
@@ -281,8 +399,151 @@ public class ShareService
             throw;
         }
 
-        return (decision, record);
+        return record;
     }
+
+    private ApprovalOutcome ApproveLocked(Guid shareId, Guid actingUserId)
+    {
+        if (_gate.IsClosed || _gateway.GetUser(actingUserId) is not { IsAdmin: true, IsDisabled: false })
+        {
+            return new ApprovalOutcome(ApprovalResult.NotFound, NotPendingMessage, null);
+        }
+
+        var pending = _store.All().FirstOrDefault(r => r.Id == shareId);
+        if (pending is not { State: ShareState.Pending })
+        {
+            return new ApprovalOutcome(ApprovalResult.NotFound, NotPendingMessage, null);
+        }
+
+        var recipientName = _gateway.GetUser(pending.RecipientUserId)?.Name;
+
+        // The end time was chosen by the sharer and runs from when they asked: one that passed while the share waited
+        // ends it now, as an expired share, rather than giving a share that is already over.
+        if (pending.ExpiresUtc is { } until && until <= _utcNow())
+        {
+            var expired = Close(pending, ShareSynchronizer.ExpiredReason);
+            return new ApprovalOutcome(ApprovalResult.Closed, ExpiredWhileWaitingMessage, expired);
+        }
+
+        // Every rule again, as of now: anything that changed since the request (the sharer's limit or permission, the
+        // recipient's settings, the title) is decided here, and a share that is no longer possible is closed, not left waiting.
+        var (decision, prepared) = Prepare(pending.SharerUserId, pending.OriginalItemId, pending.RecipientUserId, pending.Id);
+        if (prepared is null || prepared.Item.Id != pending.OriginalItemId)
+        {
+            var why = prepared is null ? decision.Message : "the title is no longer the one that was asked for.";
+            var closed = Close(pending, NoLongerPossiblePrefix + why.TrimEnd('.'));
+            return new ApprovalOutcome(ApprovalResult.Closed, "It was not approved, because it is no longer possible: " + why, closed);
+        }
+
+        ShareRecord built;
+        try
+        {
+            built = Build(prepared, pending);
+        }
+        catch (Exception ex)
+        {
+            // Build removed what it made; a record it deleted is put back as it was, so the request can be approved again.
+            _logger.LogError(ex, "Shared With Me: approving share {ShareId} failed", pending.Id);
+            if (_store.All().All(r => r.Id != pending.Id))
+            {
+                _store.Upsert(pending);
+            }
+
+            return new ApprovalOutcome(ApprovalResult.Failed, ApproveFailedMessage, null);
+        }
+
+        _logger.LogInformation("Shared With Me: share {ShareId} was approved", built.Id);
+        Notify(ShareNotifier.ApprovedEvent, built, recipientName ?? prepared.Recipient.Name);
+        return new ApprovalOutcome(ApprovalResult.Approved, string.Empty, built);
+    }
+
+    private ShareRecord? DeclineLocked(Guid shareId, Guid actingUserId, string? note)
+    {
+        if (_gate.IsClosed || _gateway.GetUser(actingUserId) is not { IsAdmin: true, IsDisabled: false })
+        {
+            return null;
+        }
+
+        var pending = _store.All().FirstOrDefault(r => r.Id == shareId);
+        if (pending is not { State: ShareState.Pending })
+        {
+            return null;
+        }
+
+        var closed = Close(pending, DeclinedReason, CleanNote(note));
+        _logger.LogInformation("Shared With Me: share {ShareId} was declined", closed.Id);
+        Notify(ShareNotifier.DeclinedEvent, closed, _gateway.GetUser(closed.RecipientUserId)?.Name ?? string.Empty);
+        return closed;
+    }
+
+    // A pending share ends: nothing was built, so only the record changes. Its playlist entry is taken out now (best
+    // effort); ViaPlaylist stays set, so the playlists pass takes it out again if the server kept it, and lets go of the
+    // title only once it is read back gone (the same guard as an expired share: sharing again would not refuse it).
+    private ShareRecord Close(ShareRecord pending, string reason, string? note = null)
+    {
+        var closed = pending with { State = ShareState.Closed, StateReason = reason, ClosedUtc = _utcNow(), DeclineNote = note };
+        _store.Upsert(closed);
+        if (closed.ViaPlaylist
+            && _store.SharePlaylists().TryGetValue(closed.SharerUserId, out var playlists)
+            && playlists.TryGetValue(closed.RecipientUserId, out var playlistId))
+        {
+            try
+            {
+                _gateway.RemoveFromPlaylist(playlistId, closed.OriginalItemId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Shared With Me: {Title} could not be taken out of playlist {PlaylistId} yet; the next pass retries", closed.Title, playlistId);
+            }
+        }
+
+        return closed;
+    }
+
+    /// <summary>
+    /// The decline note as stored: trimmed, control characters (line breaks included) replaced by spaces, runs of spaces
+    /// made one, at most <see cref="DeclineNoteMaxLength"/> characters; null when nothing is left. It is plain text and is
+    /// only ever shown as text.
+    /// </summary>
+    /// <param name="note">What the administrator wrote.</param>
+    /// <returns>The note, or null.</returns>
+    public static string? CleanNote(string? note)
+    {
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return null;
+        }
+
+        var text = string.Join(' ', new string(note.Select(c => char.IsControl(c) ? ' ' : c).ToArray()).Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        if (text.Length > DeclineNoteMaxLength)
+        {
+            text = text[..DeclineNoteMaxLength].TrimEnd();
+        }
+
+        return text.Length == 0 ? null : text;
+    }
+
+    // Never throws into the share path.
+    private void Notify(string eventName, ShareRecord record, string recipientName)
+    {
+        try
+        {
+            if (_notifier is null)
+            {
+                return;
+            }
+
+            var sharerName = _gateway.GetUser(record.SharerUserId)?.Name ?? record.SharerName;
+            _notifier.Notify(eventName, sharerName, recipientName, record.Title);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shared With Me: a notification could not be started");
+        }
+    }
+
+    // What Prepare found, for Build.
+    private sealed record Prepared(Decision Decision, ItemInfo Item, ShareKind Kind, string ShareRoot, SourceMedia? Media, UserInfo Recipient);
 
     private bool RemoveLocked(Guid shareId, Guid actingUserId)
     {

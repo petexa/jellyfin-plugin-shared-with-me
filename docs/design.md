@@ -340,3 +340,49 @@ Notification: a new admin setting `NotifyUrl`. When set, the plugin POSTs a smal
 never blocking the share (a short timeout, failures logged and ignored, no retry storm). A second setting
 `NotifyOn` is `Nothing` (default), `ApprovalsOnly` or `EverySharing`. The message names the people and the title,
 never a file path.
+
+Builder's calls (2026-11-21):
+- **Who waits.** `ShareService.NeedsApproval`: `ApprovalMode` is `LimitedProfiles`, the sharer is not an administrator, and
+  `SharePlaylistManager.IsRestricted(sharer, RealLibrariesToCount)` holds, the very test (and library set) the playlists use
+  to pick recipients, which ignores the plugin's own explicit lists and `swm-` tags. So "restricted" is wider than "age limit
+  or blocks unrated": a profile with blocked or allowed tags of its own, or without some real library, waits too.
+- **One build path.** `Create` is split into `Prepare` (end time, share root, `Check`, copy resolved to its original, probe,
+  disc folder, empty series: every check, in the order 0.1 had them) and `Build` (isolation, folder, library, record, scan).
+  A share that waits stops between them: the record is stored as `Pending` with no folder; the probe has run (it may create
+  the empty share root folder, nothing else). `Approve` runs `Prepare` again, as of now, then the same `Build` on the pending
+  record, which keeps its id, `CreatedUtc`, `ExpiresUtc` and `ViaPlaylist`. `Check` takes the id being approved so the
+  pending record does not count as a duplicate of itself; a second request by the same sharer for the same title and person
+  is refused `AlreadyShared` ("already waiting for approval"); another sharer's pending request does not block anyone.
+- **Closed at approval.** A refusal at approval closes the record with `StateReason` `no longer possible: <the refusal's
+  sentence>`. An `ExpiresUtc` that passed while waiting closes it as `expired` with its own message (the expiry clock runs from
+  the request). A failure while building (an exception) puts the pending record back, so it can be approved again (the
+  answer is 409 with a plain sentence).
+- **Pending does not expire.** `IsExpired` is Active/Broken only, so the sync and `ExpiryWatch` never touch it; the check
+  happens at approval (the simpler of the two options, and safe: a pending share grants nothing). The audit page marks one
+  whose end time passed ("approving closes it").
+- **The sync skips Pending** right after rule 1 (a deleted recipient's pending records go, as every record does) and does not
+  count it in `Checked`.
+- **Decline** closes with `StateReason` exactly `declined`; the note goes in a new record member `DeclineNote` (trimmed,
+  control characters to spaces, runs of spaces collapsed, at most 200 characters, shown only as text). It removes the
+  playlist entry at once (best effort) and leaves `ViaPlaylist` set, so the playlists pass takes it out again if the server
+  kept it and lets go only once the entry reads back gone: the B guard for `expired`, now `SharePlaylistManager.LetsGoOnlyWhenGone`,
+  covers `expired`, `declined` and `no longer possible: ...`.
+- **Playlists.** Step 1 (closed/broken leave the playlist) skips Pending; step 3 treats an Active or Pending record of the
+  sharer as "already there" (no second request, no second notification); step 4 (taken out of the playlist) withdraws a
+  Pending one; step 5 (mirroring web shares in) stays Active only, so a web request appears in the playlist once approved.
+- **Withdraw** is the existing `DELETE /Shares/{id}` (sharer or administrator); a pending record has no folder, so only the
+  record (and a playlist entry) goes.
+- **Restore and uninstall.** Restore's "remove every share first" still counts only Active shares (Broken ones never
+  counted; copies are removed by the restore itself). Pending ones changed nothing, so they never stop it; a restore that
+  finishes closes them (`sharing was switched off`), so an approval afterwards cannot put the plugin back in charge. The
+  uninstall closes them with the uninstalled reason, like Active ones.
+- **Notifications.** `ShareNotifier`, fed by `ShareService` after the store write (so web, audit page and TV shares all
+  notify; an approval that closes a share sends nothing). One `Task.Run` per event, one attempt, a 5-second token plus
+  `HttpClient.Timeout`, a named `IHttpClientFactory` client whose `SocketsHttpHandler` has `AllowAutoRedirect = false`.
+  Failures are logged at Warning with `scheme://host:port` only (a webhook secret is often in the path, not just the query);
+  the body is never logged. The address is checked on save (`Plugin.UpdateConfiguration` keeps the previous one) and again at
+  send time, because a hand-edited settings file skips the save. `Wanted(NotifyOn, event)` is the one matrix.
+- **The test message** (`POST /SharedWithMe/Audit/NotifyTest`) is sent whatever `NotifyOn` says, waits for the answer
+  (at most 5 s) and returns `{Sent, Message}`.
+- **Audit data.** Pending shares are in `AwaitingApproval`, not under the recipient's profile (nothing was given). The old
+  `AuditShare.Pending` ("copy not scanned yet") keeps its meaning.

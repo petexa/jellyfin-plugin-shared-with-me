@@ -26,6 +26,13 @@ public enum ShareState
 
     /// <summary>The share was ended.</summary>
     Closed,
+
+    /// <summary>
+    /// The share waits for an administrator's approval (<c>ApprovalMode</c> <c>LimitedProfiles</c>): nothing exists for it
+    /// on disk or on the server, nobody's access is changed, and its recipient is shown nothing. Approve builds it; Decline
+    /// or a withdrawal ends it. It never expires while it waits.
+    /// </summary>
+    Pending,
 }
 
 /// <summary>One item shared from one user to one recipient.</summary>
@@ -56,6 +63,8 @@ public enum ShareState
 /// count waits <c>ShareSynchronizer.MinCheckInterval</c> after it, so the refresh or scan it queued can land.</param>
 /// <param name="ExpiresUtc">When the share ends by itself (UTC); null until someone removes it. A value that is present but
 /// cannot be read loads as long past, so the share ends (see <see cref="ExpiryJsonConverter"/>).</param>
+/// <param name="DeclineNote">What the administrator who declined a pending share wrote for its sharer (plain text, at most
+/// <c>ShareService.DeclineNoteMaxLength</c> characters); null when none was written or the share was not declined.</param>
 public record ShareRecord(
     Guid Id,
     Guid OriginalItemId,
@@ -78,11 +87,13 @@ public record ShareRecord(
     bool ViaPlaylist = false,
     int DanglingRuns = 0,
     DateTime? CountedUtc = null,
-    [property: JsonConverter(typeof(ExpiryJsonConverter))] DateTime? ExpiresUtc = null)
+    [property: JsonConverter(typeof(ExpiryJsonConverter))] DateTime? ExpiresUtc = null,
+    string? DeclineNote = null)
 {
     /// <summary>
     /// Whether the share's time is up at <paramref name="nowUtc"/>: it has an expiry at or before that moment and is in a
-    /// state the check-shares run ends (Active or Broken). A Closed share has ended already. The one test every caller uses.
+    /// state the check-shares run ends (Active or Broken). A Closed share has ended already; a Pending one does not expire
+    /// while it waits (an approval after its end time closes it instead). The one test every caller uses.
     /// </summary>
     /// <param name="nowUtc">The current time (UTC).</param>
     /// <returns>True when the share must end now.</returns>

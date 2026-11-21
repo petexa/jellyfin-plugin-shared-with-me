@@ -83,8 +83,10 @@ public class ShareEligibility
     /// <param name="sharerId">Who is sharing.</param>
     /// <param name="itemId">What they are sharing.</param>
     /// <param name="recipientId">Who it is shared with.</param>
+    /// <param name="approving">The pending share being approved, which is not counted as a share of the same title; null
+    /// for a new share.</param>
     /// <returns>The decision.</returns>
-    public Decision Check(Guid sharerId, Guid itemId, Guid recipientId)
+    public Decision Check(Guid sharerId, Guid itemId, Guid recipientId, Guid? approving = null)
     {
         var sharer = _gateway.GetUser(sharerId);
         if (sharer is null || sharer.IsDisabled)
@@ -147,6 +149,14 @@ public class ShareEligibility
             return existing.SharerUserId == sharerId
                 ? Refuse(Refusal.AlreadyShared, $"{item.Title} is already shared with {recipient.Name}.")
                 : Refuse(Refusal.RecipientAlreadySees, $"{recipient.Name} can already watch {item.Title}.");
+        }
+
+        // The sharer's own request for the same title and person is already waiting. Someone else's pending request gives
+        // the recipient nothing yet, so it does not stop this one.
+        if (shares.Any(r => r.OriginalItemId == item.Id && r.RecipientUserId == recipientId && r.SharerUserId == sharerId
+            && r.State == ShareState.Pending && r.Id != approving))
+        {
+            return Refuse(Refusal.AlreadyShared, $"{item.Title} is already waiting for approval to be shared with {recipient.Name}.");
         }
 
         if (_gateway.CanSee(recipientId, item.Id))
