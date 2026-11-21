@@ -168,6 +168,12 @@ public class SharePlaylistManager
                 {
                     _gateway.TagPlaylist(id, LibraryAccessManager.RecipientTag(sharer));
                 }
+
+                var wantedRating = OwnerRatingFor(_gateway.GetRatings(), byId[sharer]);
+                if (!string.Equals(info.OfficialRating ?? string.Empty, wantedRating ?? string.Empty, StringComparison.Ordinal))
+                {
+                    _gateway.SetPlaylistRating(id, wantedRating);
+                }
             }
         }
 
@@ -338,6 +344,30 @@ public class SharePlaylistManager
     });
 
     /// <summary>
+    /// The rating an owner's plugin playlists carry. Jellyfin counts a playlist as an unrated item of type Other, so an
+    /// owner who blocks unrated Other items cannot list (or pick, in a TV app) their own playlists unless they carry a
+    /// rating that owner may see: the highest one within the owner's cap, or the highest known when there is no cap.
+    /// Null (no rating) when the owner does not block unrated Other items, or no rating fits.
+    /// </summary>
+    /// <param name="ratings">Every rating the server knows.</param>
+    /// <param name="owner">The playlist's owner, or null when unknown.</param>
+    /// <returns>The rating to write, or null for none.</returns>
+    public static string? OwnerRatingFor(IReadOnlyList<RatingOption> ratings, UserInfo? owner)
+    {
+        if (owner is null || !(owner.BlockedUnratedKinds?.Contains("Other", StringComparer.OrdinalIgnoreCase) ?? owner.BlocksUnrated))
+        {
+            return null;
+        }
+
+        if (owner.CapScore is { } cap)
+        {
+            return RatingChooser.Choose(ratings, cap, owner.CapSubScore);
+        }
+
+        return ratings.OrderByDescending(r => r.Score).ThenByDescending(r => r.SubScore).FirstOrDefault()?.Name;
+    }
+
+    /// <summary>
     /// Whether a profile is restricted, ignoring the plugin's own changes (its explicit library lists and swm- tags): a
     /// rating cap, blocked unrated items, a blocked tag of its own, an allowed-tags list, or no access to a real library.
     /// </summary>
@@ -389,6 +419,7 @@ public class SharePlaylistManager
         try
         {
             _gateway.TagPlaylist(id, LibraryAccessManager.RecipientTag(sharer));
+            _gateway.SetPlaylistRating(id, OwnerRatingFor(_gateway.GetRatings(), _gateway.GetUser(sharer)));
             _gateway.RenamePlaylist(id, name);
             _store.SetSharePlaylist(sharer, recipient, id);
         }

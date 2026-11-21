@@ -295,6 +295,8 @@ public sealed class FakeServerGateway : IServerGateway
 
         public List<string> Tags { get; } = new();
 
+        public string? Rating { get; set; }
+
         public List<Guid> Items { get; } = new();
     }
 
@@ -346,6 +348,16 @@ public sealed class FakeServerGateway : IServerGateway
         }
     }
 
+    public void SetPlaylistRating(Guid playlistId, string? rating)
+    {
+        Hit(nameof(SetPlaylistRating), playlistId, rating ?? string.Empty);
+        if (Playlists.TryGetValue(playlistId, out var p) && !string.Equals(p.Rating ?? string.Empty, rating ?? string.Empty, StringComparison.Ordinal))
+        {
+            p.Rating = rating;
+            Wrote(nameof(SetPlaylistRating), playlistId);
+        }
+    }
+
     public void MakePlaylistPrivate(Guid playlistId)
     {
         Hit(nameof(MakePlaylistPrivate), playlistId);
@@ -369,14 +381,14 @@ public sealed class FakeServerGateway : IServerGateway
     public PlaylistInfo? GetPlaylist(Guid playlistId)
     {
         Hit(nameof(GetPlaylist), playlistId);
-        return Playlists.TryGetValue(playlistId, out var p) ? new PlaylistInfo(playlistId, p.Owner, p.Name, p.IsPublic, p.SharedWithOthers, p.Tags.ToList()) : null;
+        return Playlists.TryGetValue(playlistId, out var p) ? new PlaylistInfo(playlistId, p.Owner, p.Name, p.IsPublic, p.SharedWithOthers, p.Tags.ToList(), p.Rating) : null;
     }
 
     public IReadOnlyList<PlaylistInfo> GetPlaylistsOwnedBy(Guid ownerUserId)
     {
         Hit(nameof(GetPlaylistsOwnedBy), ownerUserId);
         return Playlists.Where(p => p.Value.Owner == ownerUserId)
-            .Select(p => new PlaylistInfo(p.Key, p.Value.Owner, p.Value.Name, p.Value.IsPublic, p.Value.SharedWithOthers, p.Value.Tags.ToList()))
+            .Select(p => new PlaylistInfo(p.Key, p.Value.Owner, p.Value.Name, p.Value.IsPublic, p.Value.SharedWithOthers, p.Value.Tags.ToList(), p.Value.Rating))
             .ToList();
     }
 

@@ -514,6 +514,20 @@ public class JellyfinServerGateway : IServerGateway
     }
 
     /// <inheritdoc />
+    public void SetPlaylistRating(Guid playlistId, string? rating)
+    {
+        if (PlaylistItem(playlistId) is not { } p || string.Equals(p.OfficialRating ?? string.Empty, rating ?? string.Empty, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Interlocked.Increment(ref _playlistWrites);
+        p.OfficialRating = rating;
+        p.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).GetAwaiter().GetResult();
+        _playlists.SavePlaylistFile(p);
+    }
+
+    /// <inheritdoc />
     public void MakePlaylistPrivate(Guid playlistId)
     {
         if (PlaylistItem(playlistId) is not { } p)
@@ -726,7 +740,7 @@ public class JellyfinServerGateway : IServerGateway
     }
 
     private static PlaylistInfo Info(Playlist p) =>
-        new(p.Id, p.OwnerUserId, p.Name ?? string.Empty, p.OpenAccess, (p.Shares ?? Array.Empty<PlaylistUserPermissions>()).Any(s => s.UserId != p.OwnerUserId), (p.Tags ?? Array.Empty<string>()).ToList());
+        new(p.Id, p.OwnerUserId, p.Name ?? string.Empty, p.OpenAccess, (p.Shares ?? Array.Empty<PlaylistUserPermissions>()).Any(s => s.UserId != p.OwnerUserId), (p.Tags ?? Array.Empty<string>()).ToList(), string.IsNullOrEmpty(p.OfficialRating) ? null : p.OfficialRating);
 
     private Playlist? PlaylistItem(Guid id) => _libraryManager.GetItemById(id) as Playlist;
 

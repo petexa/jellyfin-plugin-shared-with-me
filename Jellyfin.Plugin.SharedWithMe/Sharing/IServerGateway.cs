@@ -73,7 +73,8 @@ public record SearchHit(Guid Id, string Title, int? Year, ShareKind Kind, string
 /// <param name="IsPublic">Whether every user may open it.</param>
 /// <param name="SharedWithOthers">Whether any other user is in its share list.</param>
 /// <param name="Tags">The playlist's own tags.</param>
-public record PlaylistInfo(Guid Id, Guid OwnerUserId, string Name, bool IsPublic, bool SharedWithOthers, IReadOnlyList<string> Tags);
+/// <param name="OfficialRating">The rating written on the playlist (null for none).</param>
+public record PlaylistInfo(Guid Id, Guid OwnerUserId, string Name, bool IsPublic, bool SharedWithOthers, IReadOnlyList<string> Tags, string? OfficialRating = null);
 
 /// <summary>A playlist's entries as stored, split into those the server still resolves and those it no longer does.</summary>
 /// <param name="ItemIds">Library item ids of the entries that resolve, in order (an item added twice is listed twice).</param>
@@ -216,6 +217,12 @@ public interface IServerGateway
     /// <param name="playlistId">The playlist.</param>
     /// <param name="tag">The tag.</param>
     void TagPlaylist(Guid playlistId, string tag);
+
+    /// <summary>Writes a rating on a plugin playlist, or clears it (null). A profile that blocks unrated items of type Other
+    /// cannot list its own unrated playlists, so the owner's playlists carry a rating that profile may see.</summary>
+    /// <param name="playlistId">The playlist.</param>
+    /// <param name="rating">The rating, or null for none.</param>
+    void SetPlaylistRating(Guid playlistId, string? rating);
 
     /// <summary>Makes a playlist private: not public and nobody in its share list. An unknown id is a no-op.</summary>
     /// <param name="playlistId">The playlist.</param>

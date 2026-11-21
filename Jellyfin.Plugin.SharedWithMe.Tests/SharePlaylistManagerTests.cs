@@ -1126,4 +1126,78 @@ public sealed class SharePlaylistManagerTests : IDisposable
         Assert.Equal(new[] { mine }, _gw.Playlists.Keys);
         Assert.Empty(_store.SharePlaylists());
     }
+
+    // ---- Playlists of a profile that blocks unrated "Other" items (Jellyfin counts a playlist as one) ----
+
+    private void BlockUnratedOther(Guid user) =>
+        _gw.Users[user] = _gw.Users[user] with { BlocksUnrated = true, BlockedUnratedKinds = new[] { "Movie", "Series", "Other" } };
+
+    [Fact]
+    public void A_playlist_owned_by_a_profile_that_blocks_unrated_Other_items_carries_a_rating_that_profile_may_see()
+    {
+        BlockUnratedOther(_kid1);
+
+        Sut().EnsurePlaylists();
+
+        Assert.Equal("12", _gw.Playlists[Playlist(_kid1, _kid2)].Rating);
+    }
+
+    [Fact]
+    public void A_playlist_carries_no_rating_for_an_owner_who_does_not_block_unrated_Other_items()
+    {
+        Sut().EnsurePlaylists();
+
+        Assert.Null(_gw.Playlists[Playlist(_kid1, _kid2)].Rating);
+        Assert.Null(_gw.Playlists[Playlist(_adult, _kid1)].Rating);
+    }
+
+    [Fact]
+    public void A_playlist_rating_follows_the_owner_blocking_and_unblocking_unrated_Other_items()
+    {
+        Sut().EnsurePlaylists();
+        Assert.Null(_gw.Playlists[Playlist(_kid1, _kid2)].Rating);
+
+        BlockUnratedOther(_kid1);
+        Sut().EnsurePlaylists();
+        Assert.Equal("12", _gw.Playlists[Playlist(_kid1, _kid2)].Rating);
+
+        _gw.Users[_kid1] = _gw.Users[_kid1] with { BlocksUnrated = false, BlockedUnratedKinds = Array.Empty<string>() };
+        Sut().EnsurePlaylists();
+        Assert.Null(_gw.Playlists[Playlist(_kid1, _kid2)].Rating);
+    }
+
+    [Fact]
+    public void A_playlist_rating_follows_the_owners_rating_limit()
+    {
+        BlockUnratedOther(_kid1);
+        Sut().EnsurePlaylists();
+
+        AddUser(_kid1, "kid1", 8);
+        BlockUnratedOther(_kid1);
+        Sut().EnsurePlaylists();
+
+        Assert.Equal("PG", _gw.Playlists[Playlist(_kid1, _kid2)].Rating);
+    }
+
+    [Fact]
+    public void A_settled_playlist_rating_is_not_written_again()
+    {
+        BlockUnratedOther(_kid1);
+        Sut().EnsurePlaylists();
+        var before = _gw.PlaylistWrites.Count(w => w.Method == nameof(IServerGateway.SetPlaylistRating));
+
+        Sut().EnsurePlaylists();
+
+        Assert.Equal(before, _gw.PlaylistWrites.Count(w => w.Method == nameof(IServerGateway.SetPlaylistRating)));
+    }
+
+    [Fact]
+    public void An_owner_with_no_limit_who_blocks_unrated_Other_items_gets_the_highest_known_rating()
+    {
+        AddUser(_kid1, "kid1", null);
+        BlockUnratedOther(_kid1);
+
+        Assert.Equal("18", SharePlaylistManager.OwnerRatingFor(_gw.GetRatings(), _gw.Users[_kid1]));
+        Assert.Null(SharePlaylistManager.OwnerRatingFor(_gw.GetRatings(), null));
+    }
 }
