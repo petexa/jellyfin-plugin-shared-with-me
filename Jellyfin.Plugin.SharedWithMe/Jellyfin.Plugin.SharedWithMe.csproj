@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.SharedWithMe</RootNamespace>
     <!-- The one place the version is written: tools/package.py and tools/deploy-spike.sh read it from here. -->
-    <Version>0.1.0.0</Version>
+    <Version>0.2.0.0</Version>
     <AssemblyVersion>$(Version)</AssemblyVersion>
     <FileVersion>$(Version)</FileVersion>
     <Deterministic>true</Deterministic>

@@ -131,7 +131,7 @@ By hand:
 
 1. Download `SharedWithMe_<version>.zip` from https://github.com/petexa/jellyfin-plugin-shared-with-me/releases.
 2. Create a folder `SharedWithMe_<version>` in Jellyfin's `plugins` folder (for example
-   `/config/plugins/SharedWithMe_0.1.0.0`) and unzip the file into it. It holds `Jellyfin.Plugin.SharedWithMe.dll` and
+   `/config/plugins/SharedWithMe_0.2.0.0`) and unzip the file into it. It holds `Jellyfin.Plugin.SharedWithMe.dll` and
    `meta.json`.
 3. Restart Jellyfin. Dashboard, Plugins should list "Shared With Me" as Active.
 

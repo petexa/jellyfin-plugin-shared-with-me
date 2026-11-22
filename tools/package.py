@@ -38,7 +38,13 @@ DESCRIPTION = ("A user who can see a film or series can share it with one other 
                "for that profile in a library of its own. To keep it there, the plugin changes every profile's library "
                "access list and blocked tags: read the README before installing. Sharing works from the web page the "
                "plugin adds, and from TV apps through private playlists.")
-CHANGELOG = "First release."
+CHANGELOG = (
+    "Parent approval: shares by restricted profiles can wait for an administrator, with an optional webhook notification. "
+    "Expiring shares (until removed, a day, a week or a date; a default for TV shares). "
+    "A fourth 'Who may share' choice: administrators and ticked profiles. "
+    "Fix: a profile that blocks unrated 'Other' items can now list its own 'Share with' playlists in TV apps. "
+    "Read the README before downgrading: 0.1 cannot read a share that is waiting for approval."
+)
 
 
 def version():
@@ -98,6 +104,18 @@ def write_zip(ver, when):
     return out
 
 
+def older_versions(ver):
+    """The entries already published in manifest.json (newest first), so the catalogue keeps every release."""
+    path = REPO / "manifest.json"
+    if not path.is_file():
+        return []
+    try:
+        existing = json.loads(path.read_text())[0]["versions"]
+    except (ValueError, KeyError, IndexError):
+        return []
+    return [v for v in existing if v.get("version") != ver]
+
+
 def write_manifest(ver, when, checksum, source_url):
     entry = {
         "guid": guid(),
@@ -113,7 +131,7 @@ def write_manifest(ver, when, checksum, source_url):
             "sourceUrl": source_url,
             "checksum": checksum,
             "timestamp": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }],
+        }] + older_versions(ver),
     }
     (REPO / "manifest.json").write_text(json.dumps([entry], indent=4) + "\n")
 
