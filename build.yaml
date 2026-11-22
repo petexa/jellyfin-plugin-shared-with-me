@@ -1,7 +1,7 @@
 # Written by tools/package.py from the csproj <Version> and Plugin.PluginGuid; do not edit by hand.
 name: "Shared With Me"
 guid: "4069397e-cf0d-460a-9a00-e5175c137516"
-version: "0.1.0.0"
+version: "0.2.0.0"
 targetAbi: "12.4.0.0"
 framework: "net10.0"
 owner: "petexa"
@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.SharedWithMe.dll"
 changelog: >
-  First release.
+  Parent approval: shares by restricted profiles can wait for an administrator, with an optional webhook notification. Expiring shares (until removed, a day, a week or a date; a default for TV shares). A fourth 'Who may share' choice: administrators and ticked profiles. Fix: a profile that blocks unrated 'Other' items can now list its own 'Share with' playlists in TV apps. Read the README before downgrading: 0.1 cannot read a share that is waiting for approval.
